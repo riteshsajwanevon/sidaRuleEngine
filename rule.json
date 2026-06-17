@@ -1,0 +1,128 @@
+[
+    {
+      "plot_area_min": 300,
+      "plot_area_max": 600,
+ 
+      "far": 1.2,
+      "max_ground_coverage_percent": 65,
+ 
+      "road_rules": [
+        {
+          "road_width_min": 12,
+          "road_width_max": 18,
+ 
+          "max_building_height": 24,
+ 
+          "height_bands": [
+            {
+              "height_min": 0,
+              "height_max": 15,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            },
+            {
+              "height_min": 15,
+              "height_max": 18,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            },
+            {
+              "height_min": 18,
+              "height_max": 20,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            }
+          ]
+        },
+ 
+        {
+          "road_width_min": 18,
+          "road_width_max": 100,
+ 
+          "max_building_height": 30,
+ 
+          "height_bands": [
+            {
+              "height_min": 0,
+              "height_max": 15,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            },
+            {
+              "height_min": 15,
+              "height_max": 18,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            },
+            {
+              "height_min": 18,
+              "height_max": 20,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            }
+          ]
+        }
+      ]
+    },
+ 
+    {
+      "plot_area_min": 800,
+      "plot_area_max": 1200,
+ 
+      "far": 1.2,
+      "max_ground_coverage_percent": 65,
+ 
+      "road_rules": [
+        {
+          "road_width_min": 12,
+          "road_width_max": 18,
+ 
+          "max_building_height": 24,
+ 
+          "height_bands": [
+            {
+              "height_min": 0,
+              "height_max": 15,
+ 
+              "setbacks": {
+                "front": 3,
+                "rear": 1.5,
+                "side1": 1.5,
+                "side2": 1.5
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
