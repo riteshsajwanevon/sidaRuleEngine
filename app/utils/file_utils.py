@@ -57,7 +57,7 @@ def get_report_path(job_id: str, stem: str) -> Path:
 # File type helpers
 # ---------------------------------------------------------------------------
 
-ALLOWED_EXTENSIONS = {".dxf", ".dwg"}
+ALLOWED_EXTENSIONS = {".dxf", }
 
 
 def validate_extension(filename: str) -> str:

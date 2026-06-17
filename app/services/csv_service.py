@@ -278,7 +278,7 @@ def load_csv_from_text(csv_text: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Metric derivation  (reused from demo_sidaproject.py metric block)
+# Metric derivation  
 # ---------------------------------------------------------------------------
 
 def derive_metrics(df: pd.DataFrame) -> dict[str, Any]:

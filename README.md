@@ -228,6 +228,39 @@ Validate a processed job against building rules.
 
 ---
 
+### POST /process-validate-dxf
+
+Upload a DXF, convert it in memory, calculate map metrics, and validate it
+against the `rule.json`-style rules sent in the same request. This endpoint does
+not create a job folder or save a CSV file.
+
+**Request** - multipart/form-data:
+```
+file: <your_drawing.dxf>
+rule_json: [{"plot_area_min": 300, "plot_area_max": 600, "...": "..."}]
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "file_name": "drawing.dxf",
+  "validation_status": "FAIL",
+  "metrics": {
+    "far_value": 1.39,
+    "max_ground_coverage_pre": 60.2
+  },
+  "report": {
+    "fetched_details": [],
+    "passed_checks": [],
+    "failed_checks": []
+  },
+  "errors": []
+}
+```
+
+---
+
 ## Error Responses
 
 All errors follow this format:

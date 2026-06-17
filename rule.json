@@ -97,7 +97,7 @@
  
     {
       "plot_area_min": 800,
-      "plot_area_max": 1200,
+      "plot_area_max": 2400,
  
       "far": 1.2,
       "max_ground_coverage_percent": 65,

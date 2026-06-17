@@ -1,183 +1,32 @@
 # -*- coding: utf-8 -*-
-"""
-Upload Router  —  POST /upload
--------------------------------
-Accepts .dxf or .dwg files.
-
-DXF workflow:
-  1. Save uploaded file to disk immediately (fast — just I/O)
-  2. Return 202 + job_id to the client right away
-  3. Parse DXF → CSV in a background thread (reads from saved path, not request)
-  4. Client polls GET /upload/status/{job_id} until status == "converted"
-
-DWG workflow:
-  - Store file, return pending_conversion status
-"""
+"""DXF processing routes."""
 
 from __future__ import annotations
-from datetime import datetime
+
 import json
 import logging
 import shutil
 import tempfile
-import time
 from pathlib import Path
+import time
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, status
+from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
-from app.services.dxf_service import dxf_to_csv_file
-from app.utils.file_utils import (
-    OUTPUTS_DIR,
-    generate_job_id,
-    get_csv_path,
-    get_upload_path,
-    safe_stem,
-    validate_extension,
-)
+from app.services.dxf_service import dxf_to_csv_file, dxf_to_csv_text
+from app.services.validation_service import run_inline_rule_validation_for_csv_text
+from app.utils.file_utils import safe_stem, validate_extension
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------------
-# Status helpers  (written to outputs/<job_id>/status.json)
-# ---------------------------------------------------------------------------
-
-def _status_path(job_id: str) -> Path:
-    return OUTPUTS_DIR / job_id / "status.json"
-
-
-def _write_status(job_id: str, payload: dict) -> None:
-    path = _status_path(job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def _read_status(job_id: str) -> dict | None:
-    path = _status_path(job_id)
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Background worker  — reads from saved file path, never from request object
-# ---------------------------------------------------------------------------
-
-def _process_dxf(job_id: str, upload_path: Path, csv_path: Path) -> None:
-    """Convert the saved DXF to CSV. Runs in a background thread."""
-    _write_status(job_id, {"status": "processing"})
-    t0 = time.perf_counter()
-
-    try:
-        dxf_to_csv_file(str(upload_path), str(csv_path))
-    except Exception as exc:
-        logger.exception("DXF processing failed for job %s", job_id)
-        _write_status(job_id, {
-            "status": "failed",
-            "message": str(exc),
-        })
-        return
-
-    elapsed = round(time.perf_counter() - t0, 2)
-    _write_status(job_id, {
-        "status": "converted",
-        "csv_path": str(csv_path),
-        "processing_time_seconds": elapsed,
-    })
-    logger.info("DXF processed for job %s in %.2fs → %s", job_id, elapsed, csv_path)
-
-
-# ---------------------------------------------------------------------------
-# POST /upload
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/upload",
-    summary="Upload a DXF or DWG file",
-    responses={
-        202: {"description": "DXF accepted — processing in background"},
-        200: {"description": "DWG received — conversion pending"},
-        400: {"description": "Unsupported file type"},
-        422: {"description": "No file provided"},
-        500: {"description": "Failed to save file"},
-    },
-)
-async def upload_file(file: UploadFile, background_tasks: BackgroundTasks):
-    if not file or not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"status": "error", "message": "No file provided."},
-        )
-
-    try:
-        ext = validate_extension(file.filename)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"status": "error", "message": str(exc)},
-        ) from exc
-
-    job_id = generate_job_id()
-    stem = safe_stem(file.filename)
-    upload_path = get_upload_path(job_id, file.filename)
-
-    # --- Save file to disk first (always, for both DXF and DWG) ---
-    try:
-        upload_path.parent.mkdir(parents=True, exist_ok=True)
-        await run_in_threadpool(_save_file, file, upload_path)
-    except Exception as exc:
-        logger.exception("Failed to save uploaded file for job %s", job_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"status": "error", "message": f"Failed to save file: {exc}"},
-        ) from exc
-    finally:
-        await file.close()
-
-    # --- DWG: just store, no conversion ---
-    if ext == ".dwg":
-        logger.info("DWG received for job %s", job_id)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "status": "pending_conversion",
-                "message": "DWG conversion will be implemented later.",
-            },
-        )
-
-    # --- DXF: queue background conversion from saved path ---
-    csv_path = get_csv_path(job_id, stem)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_status(job_id, {"status": "queued"})
-
-    # Background task reads from upload_path (already on disk) — safe
-    background_tasks.add_task(_process_dxf, job_id, upload_path, csv_path)
-
-    logger.info("DXF upload accepted for job %s, queued for processing", job_id)
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED,
-        content={
-            "job_id": job_id,
-            "status": "processing",
-        },
-    )
-
-
 def _save_file(file: UploadFile, destination: Path) -> None:
-    """Blocking file save — called via run_in_threadpool."""
+    """Blocking file save, called via run_in_threadpool."""
     with destination.open("wb") as buf:
-        shutil.copyfileobj(file.file, buf, length=1024 * 1024)  # 1 MB chunks
+        shutil.copyfileobj(file.file, buf, length=1024 * 1024)
 
-
-# ---------------------------------------------------------------------------
-# POST /parse-dxf  — convert DXF and return CSV directly
-# ---------------------------------------------------------------------------
 
 @router.post(
     "/parse-dxf",
@@ -196,8 +45,6 @@ async def parse_dxf(file: UploadFile):
         )
 
     ext = validate_extension(file.filename)
-    
-
     if ext != ".dxf":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -241,62 +88,83 @@ def _convert_uploaded_dxf_to_csv_text(file: UploadFile, stem: str) -> str:
         return csv_path.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# GET /upload/status/{job_id}
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/upload/status/{job_id}",
-    summary="Poll DXF processing status",
+@router.post(
+    "/process-validate-dxf",
+    summary="Convert a DXF file and validate it against request-body rules",
+    responses={
+        200: {"description": "DXF processed and validation completed"},
+        400: {"description": "Unsupported file type, invalid rules, or invalid DXF"},
+        422: {"description": "No file or rule_json provided"},
+        500: {"description": "Internal processing or validation error"},
+    },
 )
-async def upload_status(job_id: str):
-    job_dir = OUTPUTS_DIR / job_id
-
-    if not job_dir.exists():
+async def process_validate_dxf(
+    file: UploadFile,
+    rule_json: str = Form(...),
+):
+    t0 = time.perf_counter()
+    if not file or not file.filename:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"status": "error", "message": f"No job found with id '{job_id}'."},
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "message": "No file provided."},
         )
 
-    state = _read_status(job_id)
-
-    # If status file is missing but CSV exists, treat as converted
-    if state is None or state.get("status") not in ("processing", "queued", "failed"):
-        csv_files = list(job_dir.glob("*.csv"))
-        if csv_files:
-            return {"job_id": job_id, "status": "converted"}
-
-    return {"job_id": job_id, **(state or {"status": "processing"})}
-
-
-# ---------------------------------------------------------------------------
-# GET /upload/csv/{job_id}  — download the extracted CSV
-# ---------------------------------------------------------------------------
-
-@router.get(
-    "/upload/csv/{job_id}",
-    summary="Download the extracted CSV for a processed job",
-)
-async def download_csv(job_id: str):
-    job_dir = OUTPUTS_DIR / job_id
-
-    if not job_dir.exists():
+    try:
+        validate_extension(file.filename)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"status": "error", "message": f"No job found with id '{job_id}'."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"status": "error", "message": str(exc)},
+        ) from exc
+
+   
+    try:
+        rules = json.loads(rule_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"status": "error", "message": f"Invalid rule_json: {exc.msg}"},
+        ) from exc
+
+    if not isinstance(rules, list) or not rules:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"status": "error", "message": "rule_json must be a non-empty JSON array."},
         )
 
-    csv_files = list(job_dir.glob("*.csv"))
-    if not csv_files:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"status": "error", "message": "CSV not ready yet. Check status first."},
-        )
+    stem = safe_stem(file.filename)
 
-    from fastapi.responses import FileResponse
-    csv_file = csv_files[0]
-    return FileResponse(
-        path=str(csv_file),
-        media_type="text/csv",
-        filename=csv_file.name,
+    try:
+        
+        csv_text = await run_in_threadpool(dxf_to_csv_text, file.file)
+        logger.info("Processing dxf to csv  %s ", round(time.perf_counter() - t0, 2))
+        result = await run_in_threadpool(
+            run_inline_rule_validation_for_csv_text,
+            csv_text,
+            rules,
+            stem,
+        )
+        logger.info("Result of validation  %s ", round(time.perf_counter() - t0, 2))
+    except ValueError as exc:
+        logger.exception("DXF processing/validation failed for uploaded file %s", file.filename)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"status": "error", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        logger.exception("Failed to process and validate uploaded DXF file %s", file.filename)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"status": "error", "message": f"Failed to process and validate DXF: {exc}"},
+        ) from exc
+    finally:
+        await file.close()
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "status": "success",
+            "file_name": file.filename,
+            **result,
+        },
     )

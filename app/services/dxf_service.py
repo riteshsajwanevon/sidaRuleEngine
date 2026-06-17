@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import csv
 import traceback
+from io import StringIO
 from pathlib import Path
-from typing import IO
+from typing import IO, Iterable
 
 FIELDNAMES = [
     "Type", "Layer", "ColorCode",
@@ -46,14 +47,36 @@ SUPPORTED = {"LINE", "CIRCLE", "ARC", "LWPOLYLINE", "POLYLINE", "TEXT", "MTEXT",
 def _iter_pairs(path: str):
     """Yield (group_code_str, value_str) pairs from an ASCII DXF file."""
     with open(path, encoding="utf-8", errors="ignore") as fh:
-        while True:
-            code = fh.readline()
-            if not code:
-                break
-            value = fh.readline()
-            if not value:
-                break
-            yield code.strip(), value.rstrip("\r\n")
+        yield from _iter_pairs_from_text_stream(fh)
+
+
+def _iter_pairs_from_stream(stream: IO[bytes] | IO[str]):
+    """Yield (group_code_str, value_str) pairs from a seekable DXF stream."""
+    stream.seek(0)
+    while True:
+        code = stream.readline()
+        if not code:
+            break
+        value = stream.readline()
+        if not value:
+            break
+        if isinstance(code, bytes):
+            code = code.decode("utf-8", errors="ignore")
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        yield code.strip(), value.rstrip("\r\n")
+
+
+def _iter_pairs_from_text_stream(stream: IO[str]):
+    """Yield (group_code_str, value_str) pairs from a text DXF stream."""
+    while True:
+        code = stream.readline()
+        if not code:
+            break
+        value = stream.readline()
+        if not value:
+            break
+        yield code.strip(), value.rstrip("\r\n")
 
 
 # ---------------------------------------------------------------------------
@@ -62,12 +85,21 @@ def _iter_pairs(path: str):
 
 def  _scan_layer_colors(path: str) -> dict[str, int]:
     """Return {layer_name: color_int} from the TABLES/LAYER section."""
+    return _scan_layer_colors_from_pairs(_iter_pairs(path))
+
+
+def _scan_layer_colors_from_stream(stream: IO[bytes] | IO[str]) -> dict[str, int]:
+    """Return {layer_name: color_int} from a seekable DXF stream."""
+    return _scan_layer_colors_from_pairs(_iter_pairs_from_stream(stream))
+
+
+def _scan_layer_colors_from_pairs(pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
     colors: dict[str, int] = {}
     in_tables = False
     in_layer_table = False
     cur: dict[str, str] = {}
 
-    for code, value in _iter_pairs(path):
+    for code, value in pairs:
         if code == "0":
             if value == "SECTION":
                 in_tables = False
@@ -245,6 +277,22 @@ def _build_row(
 # ---------------------------------------------------------------------------
 
 def _stream_entities(path: str, writer: csv.DictWriter, layer_colors: dict[str, int]) -> None:
+    _stream_entities_from_pairs(_iter_pairs(path), writer, layer_colors)
+
+
+def _stream_entities_from_stream(
+    stream: IO[bytes] | IO[str],
+    writer: csv.DictWriter,
+    layer_colors: dict[str, int],
+) -> None:
+    _stream_entities_from_pairs(_iter_pairs_from_stream(stream), writer, layer_colors)
+
+
+def _stream_entities_from_pairs(
+    pairs: Iterable[tuple[str, str]],
+    writer: csv.DictWriter,
+    layer_colors: dict[str, int],
+) -> None:
     """
     Scan the ENTITIES section of the DXF and write one CSV row per entity.
 
@@ -273,7 +321,7 @@ def _stream_entities(path: str, writer: csv.DictWriter, layer_colors: dict[str, 
         cur_type = None
         cur_attrs = {}
 
-    for code, value in _iter_pairs(path):
+    for code, value in pairs:
 
         # ── Section markers ──────────────────────────────────────────────
         if code == "0" and value == "SECTION":
@@ -367,6 +415,26 @@ def dxf_to_csv_file(dxf_path: str, output_csv_path: str) -> str:
             writer.writeheader()
             _stream_entities(dxf_path, writer, layer_colors)
         return output_csv_path
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"DXF parsing failed: {exc}\n{traceback.format_exc()}") from exc
+
+
+def dxf_to_csv_text(dxf_stream: IO[bytes] | IO[str]) -> str:
+    """
+    Convert a seekable DXF stream to CSV text without writing files to disk.
+
+    This is used by real-time endpoints that should not create a job folder or
+    persisted CSV artifact.
+    """
+    try:
+        layer_colors = _scan_layer_colors_from_stream(dxf_stream)
+        out = StringIO()
+        writer = csv.DictWriter(out, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        _stream_entities_from_stream(dxf_stream, writer, layer_colors)
+        return out.getvalue()
     except ValueError:
         raise
     except Exception as exc:

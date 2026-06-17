@@ -24,7 +24,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.services.csv_service import derive_metrics, load_csv
+from app.services.csv_service import derive_metrics, load_csv, load_csv_from_text
 from app.services.new_json_service import load_rules
 
 logger = logging.getLogger(__name__)
@@ -412,3 +412,323 @@ def run_validation_for_job(
         result["errors"] = validation_result["failures"]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Inline rule.json validation  (POST /process-validate-dxf)
+# ---------------------------------------------------------------------------
+
+def _value_in_range(value: float, min_value: Any = None, max_value: Any = None) -> bool:
+    if min_value is not None and value < float(min_value):
+        return False
+    if max_value is not None and value > float(max_value):
+        return False
+    return True
+
+
+# def get_applicable_inline_rule(
+#     plot_area: float,
+#     road_width: float,
+#     rules: list[dict[str, Any]],
+# ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+#     """Select a rule and nested road rule from the request-body rule_json schema."""
+#     for rule in rules:
+#         if not _value_in_range(
+#             plot_area,
+#             rule.get("plot_area_min"),
+#             rule.get("plot_area_max"),
+#         ):
+#             continue
+
+#         for road_rule in rule.get("road_rules", []):
+#             if _value_in_range(
+#                 road_width,
+#                 road_rule.get("road_width_min"),
+#                 road_rule.get("road_width_max"),
+#             ):
+#                 return rule, road_rule
+
+#     return None
+
+
+from typing import Any
+
+
+def get_applicable_inline_rule(
+    plot_area: float,
+    road_width: float,
+    rules: list[dict[str, Any]],
+):
+    """
+    Returns one of three shapes:
+
+    1. Full match:
+       {"success": True, "rule": ..., "road_rule": ...}
+
+    2. Plot matched, road width did not:
+       {"success": False, "failed_at": "road_width",
+        "rule": <matched plot rule>,          ← plot-level checks still run
+        "road_width": <actual>,
+        "available_road_ranges": [...]}
+
+    3. No plot area matched:
+       {"success": False, "failed_at": "plot_area",
+        "plot_area": <actual>,
+        "available_plot_ranges": [...]}
+    """
+    for rule in rules:
+        if not _value_in_range(
+            plot_area,
+            rule.get("plot_area_min"),
+            rule.get("plot_area_max"),
+        ):
+            continue
+
+        # ── Plot area matched ────────────────────────────────────────────
+        for road_rule in rule.get("road_rules", []):
+            if _value_in_range(
+                road_width,
+                road_rule.get("road_width_min"),
+                road_rule.get("road_width_max"),
+            ):
+                return {
+                    "success": True,
+                    "rule": rule,
+                    "road_rule": road_rule,
+                }
+
+        # Plot matched but no road width matched — return the plot rule so
+        # FAR / coverage checks can still be run by the caller.
+        return {
+            "success": False,
+            "failed_at": "road_width",
+            "rule": rule,
+            "road_width": road_width,
+            "available_road_ranges": [
+                {
+                    "road_width_min": rr.get("road_width_min"),
+                    "road_width_max": rr.get("road_width_max"),
+                }
+                for rr in rule.get("road_rules", [])
+            ],
+        }
+
+    # ── No plot area matched ─────────────────────────────────────────────
+    return {
+        "success": False,
+        "failed_at": "plot_area",
+        "plot_area": plot_area,
+        "available_plot_ranges": [
+            {
+                "plot_area_min": r.get("plot_area_min"),
+                "plot_area_max": r.get("plot_area_max"),
+            }
+            for r in rules
+        ],
+    }
+
+def get_inline_required_setbacks(
+    road_rule: dict[str, Any],
+    building_height: float,
+) -> dict[str, Any] | None:
+    """Return setback requirements for the matching inline height band."""
+    for band in road_rule.get("height_bands", []):
+        h_min = band.get("height_min")
+        h_max = band.get("height_max")
+        if _value_in_range(building_height, h_min, h_max):
+            return band.get("setbacks", {})
+    return None
+
+
+def _run_inline_rule_validation(
+    metrics: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate derived CAD metrics against rule.json-style request rules."""
+    plot_area = metrics["plot_area"]
+    road_width = metrics["road_width"]
+    far_value = metrics["far_value"]
+    max_ground_coverage_pre = metrics["max_ground_coverage_pre"]
+    building_height = metrics["building_height"]
+
+    match = get_applicable_inline_rule(plot_area, road_width, rules)
+
+    # ── No plot area matched ─────────────────────────────────────────────
+    if match["failed_at"] == "plot_area" if not match["success"] else False:
+        ranges = ", ".join(
+            f"{r['plot_area_min']}–{r['plot_area_max']} Sq.M"
+            for r in match["available_plot_ranges"]
+        )
+        return {
+            "status": "FAIL",
+            "failures": [
+                f"Plot Area : In Map = {plot_area} Sq.M does not fall within any "
+                f"defined plot area range. Available ranges: {ranges}."
+            ],
+            "details": [],
+            "applicable_rule": None,
+        }
+
+    pass_list: list[str] = []
+    fail_list: list[str] = []
+
+    # ── Plot-level checks (run regardless of road width match) ───────────
+    rule = match["rule"]
+
+    allowed_far = rule.get("far")
+    if allowed_far is not None:
+        if far_value > float(allowed_far):
+            fail_list.append(f"FAR : Allowed <= {allowed_far}, In Map = {far_value}")
+        else:
+            pass_list.append(f"FAR : In Map = {far_value}, Allowed <= {allowed_far}")
+
+    allowed_coverage = rule.get("max_ground_coverage_percent")
+    if allowed_coverage is not None:
+        if max_ground_coverage_pre > float(allowed_coverage):
+            fail_list.append(
+                f"Ground Coverage Percent : "
+                f"Allowed <= {float(allowed_coverage):.2f}%, "
+                f"In Map = {max_ground_coverage_pre}%"
+            )
+        else:
+            pass_list.append(
+                f"Ground Coverage Percent : "
+                f"In Map = {max_ground_coverage_pre}%, "
+                f"Allowed <= {float(allowed_coverage):.2f}%"
+            )
+
+    # ── Road width did not match — add diagnostic error, stop here ───────
+    if not match["success"]:
+        ranges = ", ".join(
+            f"{r['road_width_min']}–{r['road_width_max']} m"
+            for r in match["available_road_ranges"]
+        )
+        fail_list.append(
+            f"Road Width : In Map = {road_width} m does not match any defined "
+            f"road width range for this plot area rule "
+            f"({rule.get('plot_area_min')}–{rule.get('plot_area_max')} Sq.M). "
+            f"Available road width ranges: {ranges}. "
+            f"Building height, setback checks require a matching road rule."
+        )
+        return {
+            "status": "FAIL",
+            "failures": fail_list,
+            "details": pass_list,
+            "applicable_rule": {"rule": rule, "road_rule": None},
+        }
+
+    # ── Full match — road-level checks ───────────────────────────────────
+    road_rule = match["road_rule"]
+
+    max_height = road_rule.get("max_building_height")
+    if max_height is not None:
+        if building_height > float(max_height):
+            fail_list.append(
+                f"Building Height : Allowed <= {max_height} m, In Map = {building_height} m"
+            )
+        else:
+            pass_list.append(
+                f"Building Height : In Map = {building_height} m, Allowed <= {max_height} m"
+            )
+
+    setbacks = get_inline_required_setbacks(road_rule, building_height)
+    if setbacks:
+        provided_setbacks = {
+            "front": metrics["front_set_back"],
+            "rear": metrics["rear_set_back"],
+            "side1": metrics["side_setback_distance1"],
+            "side2": metrics["side_setback_distance2"],
+        }
+        labels = {
+            "front": "Front",
+            "rear": "Rear",
+            "side1": "Side 1",
+            "side2": "Side 2",
+        }
+        for key, current in provided_setbacks.items():
+            required = setbacks.get(key)
+            if required is None:
+                continue
+            if current < float(required):
+                fail_list.append(f"{labels[key]} Setback : Allowed >= {required} m, In Map = {current} m")
+            else:
+                pass_list.append(f"{labels[key]} Setback : In Map = {current} m, Allowed >= {required} m")
+
+    status = "PASS" if not fail_list else "FAIL"
+    return {
+        "status": status,
+        "failures": fail_list,
+        "details": pass_list,
+        "applicable_rule": {
+            "rule": rule,
+            "road_rule": road_rule,
+        },
+    }
+
+
+def run_inline_rule_validation_for_csv(
+    csv_path: str,
+    rules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Full pipeline for request-body rules: load CSV, derive metrics, validate, report.
+    """
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("rule_json must be a non-empty array of rule objects.")
+
+    df: pd.DataFrame = load_csv(csv_path)
+    metrics = derive_metrics(df)
+    validation_result = _run_inline_rule_validation(metrics, rules)
+    report = build_report(metrics, validation_result, file_name=Path(csv_path).stem)
+
+    result: dict[str, Any] = {
+        "validation_status": validation_result["status"],
+        "metrics": metrics,
+        "applicable_rule": validation_result.get("applicable_rule"),
+        "report": report,
+    }
+
+    if validation_result["status"] == "FAIL":
+        result["errors"] = validation_result["failures"]
+
+    return result
+
+
+def run_inline_rule_validation_for_dataframe(
+    df: pd.DataFrame,
+    rules: list[dict[str, Any]],
+    file_name: str = "Uploaded DXF",
+) -> dict[str, Any]:
+    """
+    Validate an already-loaded CAD DataFrame against request-body rules.
+    """
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("rule_json must be a non-empty array of rule objects.")
+
+    metrics = derive_metrics(df)
+    validation_result = _run_inline_rule_validation(metrics, rules)
+    report = build_report(metrics, validation_result, file_name=file_name)
+
+    result: dict[str, Any] = {
+        "validation_status": validation_result["status"],
+        # "metrics": metrics,
+        "applicable_rule": validation_result.get("applicable_rule"),
+        "report": report,
+    }
+
+    # if validation_result["status"] == "FAIL":
+    #     result["errors"] = validation_result["failures"]
+
+    return result
+
+
+def run_inline_rule_validation_for_csv_text(
+    csv_text: str,
+    rules: list[dict[str, Any]],
+    file_name: str = "Uploaded DXF",
+) -> dict[str, Any]:
+    """
+    Validate CSV text produced in memory by the DXF streamer.
+    """
+    df = load_csv_from_text(csv_text)
+    return run_inline_rule_validation_for_dataframe(df, rules, file_name=file_name)
