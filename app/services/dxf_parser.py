@@ -23,7 +23,7 @@ Public API
 Flow
 ----
     stream
-      └── _read_all_pairs()          reads (code, value) pairs once
+      └── _iter_pairs()              streams (code, value) pairs
               ├── _extract_layer_colors(pairs)   → dict[str, int]
               └── _extract_entities(pairs, colors) → list[DxfEntity]
                       └── CADModel(layer_colors, entities)
@@ -33,7 +33,7 @@ Flow
 from __future__ import annotations
 
 import traceback
-from typing import IO, Iterable
+from typing import IO, Iterable, Iterator
 
 from app.models.cad_model import CADModel, DxfEntity, SUPPORTED_TYPES
 
@@ -42,13 +42,14 @@ from app.models.cad_model import CADModel, DxfEntity, SUPPORTED_TYPES
 # Low-level pair reader
 # ---------------------------------------------------------------------------
 
-def _read_all_pairs(stream: IO[bytes] | IO[str]) -> list[tuple[str, str]]:
+def _iter_pairs(stream: IO[bytes] | IO[str]) -> Iterator[tuple[str, str]]:
     """
-    Read every (group_code, value) pair from a seekable DXF stream into a
-    list.  The stream is consumed exactly once.
+    Yield (group_code, value) pairs from a seekable DXF stream.
+
+    This keeps only the current pair in memory instead of materializing the
+    full DXF into a list.
     """
     stream.seek(0)
-    pairs: list[tuple[str, str]] = []
     while True:
         code = stream.readline()
         if not code:
@@ -60,8 +61,7 @@ def _read_all_pairs(stream: IO[bytes] | IO[str]) -> list[tuple[str, str]]:
             code = code.decode("utf-8", errors="ignore")
         if isinstance(val, bytes):
             val = val.decode("utf-8", errors="ignore")
-        pairs.append((code.strip(), val.rstrip("\r\n")))
-    return pairs
+        yield code.strip(), val.rstrip("\r\n")
 
 
 # ---------------------------------------------------------------------------
@@ -366,9 +366,9 @@ def parse_dxf_to_cad_model(stream: IO[bytes] | IO[str]) -> CADModel:
     Parse a seekable DXF stream and return a fully-indexed CADModel.
 
     This is the primary entry point for the validation pipeline.
-    The stream is read exactly once into an in-memory pair list, then:
+    The stream is scanned once as streaming code/value pairs:
         1. Layer colours are extracted from the TABLES section.
-        2. Entities are extracted from the ENTITIES section.
+        2. The same pair iterator continues into the ENTITIES section.
         3. A CADModel is constructed — indexes built automatically.
 
     No CSV is generated.  No pandas DataFrame is created.
@@ -376,9 +376,9 @@ def parse_dxf_to_cad_model(stream: IO[bytes] | IO[str]) -> CADModel:
     Raises ValueError on parse failure.
     """
     try:
-        all_pairs = _read_all_pairs(stream)
-        layer_colors = _extract_layer_colors(iter(all_pairs))
-        entities     = _extract_entities(iter(all_pairs), layer_colors)
+        pairs = _iter_pairs(stream)
+        layer_colors = _extract_layer_colors(pairs)
+        entities     = _extract_entities(pairs, layer_colors)
         return CADModel(layer_colors=layer_colors, entities=entities)
     except ValueError:
         raise

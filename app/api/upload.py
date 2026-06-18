@@ -69,6 +69,7 @@ async def process_validate_dxf(
         # DXF → CADModel (single pass, no CSV)
         t1 = time.perf_counter()
         cad_model = await run_in_threadpool(parse_dxf_to_cad_model, file.file)
+        print(cad_model)
         logger.info(
             "DXF parse → CADModel: %.2fs  (%d entities)",
             time.perf_counter() - t1,
