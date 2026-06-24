@@ -303,6 +303,9 @@ def _build_report(
 
 def run_validation_from_cad_model(
     model: CADModel,
+    building_type: str,
+    subtype: str,
+    location: str,
     rules: list[dict[str, Any]],
     file_name: str = "Uploaded DXF",
 ) -> dict[str, Any]:
@@ -327,7 +330,7 @@ def run_validation_from_cad_model(
     if not isinstance(rules, list) or not rules:
         raise ValueError("rules must be a non-empty list.")
 
-    metrics           = derive_metrics(model)
+    metrics           = derive_metrics(model , building_type, subtype, location)
     validation_result = _run_validation(metrics, rules)
     report            = _build_report(metrics, validation_result, file_name)
 

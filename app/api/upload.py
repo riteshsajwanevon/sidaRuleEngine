@@ -85,7 +85,7 @@ async def process_validate_dxf(
             stem,
         )
         logger.info("Validation: %.2fs", time.perf_counter() - t2)
-        logger.info("Total processing: %.2fs", time.perf_counter() - t0)
+        
 
     except ValueError as exc:
         logger.exception("DXF processing/validation failed for %s", file.filename)
@@ -101,7 +101,7 @@ async def process_validate_dxf(
         ) from exc
     finally:
         await file.close()
-
+    logger.info("Total processing: %.2fs", time.perf_counter() - t0)
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={

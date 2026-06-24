@@ -4,7 +4,6 @@ Metric Extraction Layer
 -----------------------
 Derives all SIDA architectural metrics directly from a CADModel.
 
-No CSV.  No pandas.  No DataFrame.
 
 Color-code reference (from demo_sidaproject.py)
 -----------------------------------------------
@@ -212,7 +211,7 @@ def _fmt(v: float, decimals: int = 2) -> float:
 # Public metric derivation
 # ---------------------------------------------------------------------------
 
-def derive_metrics(model: CADModel) -> dict[str, Any]:
+def derive_metrics(model: CADModel , building_type: str, subtype: str, location: str) -> dict[str, Any]:
     """
     Derive all SIDA architectural metrics from a CADModel.
 
