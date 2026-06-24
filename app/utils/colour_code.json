@@ -42,7 +42,6 @@
   "basement_floor_height": {"color_code": 90, "line_type": ["LINE"], "layer": ["FLOOR-BF1","FLOOR-BF2"]},
   "car_parking": {"color_code": 140, "line_type": ["LWPOLYLINE","POLYLINE"], "layer": ["APPLICABLE_FLOOR"]},
   "scooter_parking": {"color_code": 101, "line_type": ["LWPOLYLINE","POLYLINE"], "layer": ["APPLICABLE_FLOOR"]},
-  "ground_floor_area": {"color_code": 215, "line_type": ["LWPOLYLINE","POLYLINE"], "layer": ["FLOOR-GROUND"]},
   "vehicular_ramp": {"color_code": 106, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["APPLICABLE_FLOOR"]},
   "lift": {"color_code": 22, "line_type": ["LWPOLYLINE","POLYLINE"], "layer": ["APPLICABLE_FLOOR"]},
   "stair": {"color_code": 115, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["APPLICABLE_FLOOR"]},
@@ -81,6 +80,8 @@
   "mumty_height": {"color_code": 45, "line_type": ["LINE"], "layer": ["FLOOR-TERRACE"]},
   "machine_room_height": {"color_code": 46, "line_type": ["LINE"], "layer": ["FLOOR-TERRACE"]},
   "typical_floor_area": {"color_code": 194, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["APPLICABLE_FLOOR"]},
+  
+  "ground_floor_area": {"color_code": 215, "line_type": ["LWPOLYLINE","POLYLINE"], "layer": ["FLOOR-GROUND"]},
   "first_floor_area": {"color_code": 195, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["FLOOR01"]},
   "second_floor_area": {"color_code": 196, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["FLOOR02"]},
   "third_floor_area": {"color_code": 197, "line_type": ["LWPOLYLINE","POLYLINE","TEXT"], "layer": ["FLOOR03"]},
