@@ -105,6 +105,7 @@ class CADModel:
     by_color: dict[int, list[DxfEntity]] = field(default_factory=dict, init=False, repr=False)
     by_type:  dict[str, list[DxfEntity]] = field(default_factory=dict, init=False, repr=False)
     by_layer: dict[str, list[DxfEntity]] = field(default_factory=dict, init=False, repr=False)
+    
 
     def __post_init__(self) -> None:
         self._build_indexes()

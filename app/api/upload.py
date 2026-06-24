@@ -83,6 +83,9 @@ async def process_validate_dxf(
             cad_model,
             rules,
             stem,
+            # building_type="test",
+            # subtype="test",
+            # location="test",            
         )
         logger.info("Validation: %.2fs", time.perf_counter() - t2)
         

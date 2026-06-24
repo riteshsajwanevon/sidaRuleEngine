@@ -302,12 +302,13 @@ def _build_report(
 # ---------------------------------------------------------------------------
 
 def run_validation_from_cad_model(
-    model: CADModel,
-    building_type: str,
-    subtype: str,
-    location: str,
+    model: CADModel,    
     rules: list[dict[str, Any]],
+    building_type: str = "test",
+    subtype: str = "test",
+    location: str = "test",
     file_name: str = "Uploaded DXF",
+    
 ) -> dict[str, Any]:
     """
     Full validation pipeline: CADModel → metrics → rules → report.
