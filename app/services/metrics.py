@@ -60,6 +60,16 @@ from app.models.cad_model import CADModel, DxfEntity
 # ---------------------------------------------------------------------------
 SCALE: float = 1.0
 
+NON_FAR:dist[str,int] = {
+    'guard_room_area' : 182,
+    'meter_room_area' :192,
+    'mumty_area'  :9,
+    'stairs_area' :115,
+    'fire_stairs' : 116,
+    'shaft_area' : 11,
+    'lift_area' :22
+}
+
 # ---------------------------------------------------------------------------
 # Floor color-code mapping
 # ---------------------------------------------------------------------------
@@ -71,6 +81,15 @@ FLOOR_CODES: dict[str, int] = {
     "fourth": 198,
     "fifth":  199,
     "sixth":  200,
+    "seven":  201,
+    "eight":  202,
+    "nine" :  203,
+    "tenth" :  204,
+    "eleventh" :  205,
+    "twelth" :  206,
+    "thirteen" :  207,
+    "fourteen" :  208,
+    "fivetenn" :  209,
 }
 
 
@@ -207,6 +226,7 @@ def _fmt(v: float, decimals: int = 2) -> float:
     return round(v, decimals)
 
 
+
 # ---------------------------------------------------------------------------
 # Public metric derivation
 # ---------------------------------------------------------------------------
@@ -226,7 +246,7 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     Returns
     -------
     dict with keys: plot_area, floor_areas, far_value, far_area,
-        max_ground_coverage_pre, building_height, road_width, setbacks,
+        ground_coverage_percentage, building_height, road_width, setbacks,
         parking areas, ancillary areas, and derived totals.
     """
 
@@ -254,8 +274,19 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
 
     road_width      = _fmt(_length(model, 41))
     building_height = _fmt(_length(model, 151))
-    max_ground_cov  = _fmt(_area(model, 10))
+    ground_coverage  = _fmt(_area(model, 10))
+
+    
     mumty_height    = _fmt(_length(model, 45))
+
+    # NON FAR
+    guard_room_area             = _fmt(_area(model, 182))
+    meter_room_area             = _fmt(_area(model, 192))
+    mumty_area             = _fmt(_area(model, 9))
+    stairs_area            = _fmt(_sum_area(model, 115))
+    fire_stairs            = _fmt(_sum_area(model, 116))
+    shaft_area            = _fmt(_sum_area(model, 11))
+    lift_area             = _fmt(_sum_area(model, 22))
 
     # --- Parking ---
     open_parking_area       = _fmt(_sum_area(model, 20))
@@ -265,26 +296,33 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     basement_parking_area   = _fmt(_sum_area(model, 31))
 
     # --- Ancillary ---
-    guard_room             = _fmt(_area(model, 182))
-    meter_room             = _fmt(_area(model, 192))
-    mumty_area             = _fmt(_area(model, 9))
+    
     green_area             = _fmt(_sum_area(model, 60))
     canopy_area            = _fmt(_area(model, 184))
-    stairs_area            = _fmt(_sum_area(model, 115))
-    fire_stairs            = _fmt(_sum_area(model, 116))
+    
     loading_unloading_area = _fmt(_area(model, 221))
     rain_water_harvesting  = _fmt(_area(model, 94))
 
     # --- Derived totals ---
     ground_area             = floor_areas.get("ground", 0.0)
+    non_far_area = (guard_room_area + meter_room_area + mumty_area + stairs_area + fire_stairs + shaft_area + lift_area)
+
     total_ground_floor_area = _fmt(ground_area + guard_room + meter_room)
-    total_stair_case_area   = _fmt(stairs_area + fire_stairs)
-    total_floor_builtup     = _fmt(sum(floor_areas.values()))
-    far_area                = _fmt(total_floor_builtup - total_stair_case_area)
+
+    # total_stair_case_area   = _fmt(stairs_area + fire_stairs)
+
+    total_floor_area     = _fmt(sum(floor_areas.values()))
+
+    far_area                = _fmt(total_floor_area - non_far_area)
+
     far_value               = _fmt(far_area / plot_area) if plot_area else 0.0
-    max_ground_coverage_pre = _fmt(max_ground_cov / plot_area * 100) if plot_area else 0.0
+
+    ground_coverage_percentage = _fmt(ground_coverage / plot_area * 100) if plot_area else 0.0
+
     open_area               = _fmt(plot_area - total_ground_floor_area)
+
     chargable_area          = _fmt(sum(floor_areas.values()) + mumty_area + guard_room + meter_room)
+
     covered_area            = chargable_area
 
     # --- Parking permissible ---
@@ -300,9 +338,9 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
         "plot_area":               plot_area,
         # Floors
         "floor_areas":             floor_areas,
-        "total_floor_builtup":     total_floor_builtup,
+        "total_floor_builtup":     total_floor_area,
         "total_ground_floor_area": total_ground_floor_area,
-        "total_stair_case_area":   total_stair_case_area,
+        # "total_stair_case_area":   total_stair_case_area,
         # Setbacks
         "front_set_back":              front_set_back,
         "front_set_back_len":          front_set_back_len,
@@ -317,8 +355,8 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
         "building_height": building_height,
         "mumty_height":    mumty_height,
         # Coverage / FAR
-        "max_ground_cov":          max_ground_cov,
-        "max_ground_coverage_pre": max_ground_coverage_pre,
+        "ground_coverage":          ground_coverage,
+        "ground_coverage_percentage": ground_coverage_percentage,
         "far_area":                far_area,
         "far_value":               far_value,
         "open_area":               open_area,
