@@ -273,11 +273,16 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     side_setback_distance2_len = _fmt(_length(model, 2))
 
     road_width      = _fmt(_length(model, 41))
-    building_height = _fmt(_length(model, 151))
+
     ground_coverage  = _fmt(_area(model, 10))
 
-    
+
+    # heights
+    building_height = _fmt(_length(model, 151))  #height of building after excemption
+    plinth_height = _fmt(_length(model, 105))
     mumty_height    = _fmt(_length(model, 45))
+    stilth_floor_height = _fmt(_length(model, 21))
+    machine_room_height = _fmt(_length(model, 46))
 
     # NON FAR
     guard_room_area             = _fmt(_area(model, 182))
@@ -298,32 +303,34 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     # --- Ancillary ---
     
     green_area             = _fmt(_sum_area(model, 60))
-    canopy_area            = _fmt(_area(model, 184))
+    canopy_area            = _fmt(_sum_area(model, 184))
     
-    loading_unloading_area = _fmt(_area(model, 221))
-    rain_water_harvesting  = _fmt(_area(model, 94))
+    loading_unloading_area = _fmt(_sum_area(model, 221))
+    rain_water_harvesting  = _fmt(_sum_area(model, 94))
 
     # --- Derived totals ---
     ground_area             = floor_areas.get("ground", 0.0)
     non_far_area = (guard_room_area + meter_room_area + mumty_area + stairs_area + fire_stairs + shaft_area + lift_area)
 
-    total_ground_floor_area = _fmt(ground_area + guard_room + meter_room)
+    total_ground_floor_area = _fmt(ground_area + guard_room_area + meter_room_area)
 
-    # total_stair_case_area   = _fmt(stairs_area + fire_stairs)
 
     total_floor_area     = _fmt(sum(floor_areas.values()))
 
     far_area                = _fmt(total_floor_area - non_far_area)
 
-    far_value               = _fmt(far_area / plot_area) if plot_area else 0.0
+    
 
     ground_coverage_percentage = _fmt(ground_coverage / plot_area * 100) if plot_area else 0.0
 
     open_area               = _fmt(plot_area - total_ground_floor_area)
 
-    chargable_area          = _fmt(sum(floor_areas.values()) + mumty_area + guard_room + meter_room)
+    chargable_area          = _fmt(sum(floor_areas.values()) + mumty_area + guard_room_area + meter_room_area)
 
     covered_area            = chargable_area
+
+
+    far_value               = _fmt(far_area / plot_area) if plot_area else 0.0
 
     # --- Parking permissible ---
     plot_usage = 0.3 if plot_area < 1000 else 0.5
@@ -332,28 +339,36 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     permissible_stilt_parking      = _fmt(ecs * 28)
     permissible_basement_parking   = _fmt(ecs * 32)
     permissible_mechanical_parking = _fmt(ecs * 64)
-
+    
     return {
         # Plot
         "plot_area":               plot_area,
         # Floors
         "floor_areas":             floor_areas,
         "total_floor_builtup":     total_floor_area,
+
         "total_ground_floor_area": total_ground_floor_area,
         # "total_stair_case_area":   total_stair_case_area,
         # Setbacks
         "front_set_back":              front_set_back,
-        "front_set_back_len":          front_set_back_len,
+        "front_set_back_length":          front_set_back_len,
         "rear_set_back":               rear_set_back,
-        "rear_set_back_len":           rear_set_back_len,
+        "rear_set_back_length":           rear_set_back_len,
         "side_setback_distance1":      side_setback_distance1,
-        "side_setback_distance1_len":  side_setback_distance1_len,
+        "side_setback_distance1_length":  side_setback_distance1_len,
         "side_setback_distance2":      side_setback_distance2,
-        "side_setback_distance2_len":  side_setback_distance2_len,
+        "side_setback_distance2_length":  side_setback_distance2_len,
+
         # Road / height
         "road_width":      road_width,
         "building_height": building_height,
         "mumty_height":    mumty_height,
+        "plinth_height": plinth_height,
+        "mumty_height": mumty_height,
+        "stilth_floor_height": stilth_floor_height,
+        "machine_room_height": machine_room_height,
+
+
         # Coverage / FAR
         "ground_coverage":          ground_coverage,
         "ground_coverage_percentage": ground_coverage_percentage,
@@ -374,8 +389,8 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
         "permissible_basement_parking":   permissible_basement_parking,
         "permissible_mechanical_parking": permissible_mechanical_parking,
         # Ancillary
-        "guard_room":              guard_room,
-        "meter_room":              meter_room,
+        "guard_room_area":              guard_room_area,
+        "meter_room_area":              meter_room_area,
         "mumty_area":              mumty_area,
         "green_area":              green_area,
         "canopy_area":             canopy_area,

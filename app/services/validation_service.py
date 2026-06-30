@@ -109,6 +109,9 @@ def _get_required_setbacks(road_rule: dict[str, Any], height: float) -> dict[str
 def _run_validation(
     metrics: dict[str, Any],
     rules: list[dict[str, Any]],
+    building_type: str,
+    subtype: str, 
+    location: str
 ) -> dict[str, Any]:
     """
     Validate derived metrics against the hierarchical rule.json schema.
@@ -117,7 +120,7 @@ def _run_validation(
     plot_area          = metrics["plot_area"]
     road_width         = metrics["road_width"]
     far_value          = metrics["far_value"]
-    max_ground_cov_pct = metrics["max_ground_coverage_pre"]
+    ground_coverage_percentage = metrics["ground_coverage_percentage"]
     building_height    = metrics["building_height"]
 
     match = _get_applicable_rule(plot_area, road_width, rules)
@@ -152,14 +155,14 @@ def _run_validation(
 
     allowed_cov = rule.get("max_ground_coverage_percent")
     if allowed_cov is not None:
-        if max_ground_cov_pct > float(allowed_cov):
+        if ground_coverage_percentage > float(allowed_cov):
             fail_list.append(
                 f"Ground Coverage Percent : Allowed <= {float(allowed_cov):.2f}%, "
-                f"In Map = {max_ground_cov_pct}%"
+                f"In Map = {ground_coverage_percentage}%"
             )
         else:
             pass_list.append(
-                f"Ground Coverage Percent : In Map = {max_ground_cov_pct}%, "
+                f"Ground Coverage Percent : In Map = {ground_coverage_percentage}%, "
                 f"Allowed <= {float(allowed_cov):.2f}%"
             )
 
@@ -278,13 +281,12 @@ def _build_report(
 
     fetched += [
         {"label": "Guard/Meter Room Area",
-         "value": round(metrics["guard_room"] + metrics["meter_room"], 2), "unit": "Sq.M"},
+         "value": round(metrics["guard_room_area"] + metrics["meter_room_area"], 2), "unit": "Sq.M"},
         {"label": "Mumty Area",           "value": metrics["mumty_area"],            "unit": "Sq.M"},
         {"label": "Covered Area",         "value": metrics["covered_area"],          "unit": "Sq.M"},
-        {"label": "Ground Coverage",      "value": metrics["max_ground_cov"],
-         "unit": f"Sq.M ({metrics['max_ground_coverage_pre']}%)"},
+        {"label": "Ground Coverage",      "value": metrics["ground_coverage"],
+         "unit": f"Sq.M ({metrics['ground_coverage_percentage']}%)"},
         {"label": "Open Area",            "value": metrics["open_area"],             "unit": "Sq.M"},
-        {"label": "Total Staircase Area", "value": metrics["total_stair_case_area"], "unit": "Sq.M"},
         {"label": "Total Chargeable Area","value": metrics["chargable_area"],        "unit": "Sq.M"},
     ]
 
@@ -332,7 +334,7 @@ def run_validation_from_cad_model(
         raise ValueError("rules must be a non-empty list.")
 
     metrics           = derive_metrics(model , building_type, subtype, location)
-    validation_result = _run_validation(metrics, rules)
+    validation_result = _run_validation(metrics, rules , building_type, subtype, location)
     report            = _build_report(metrics, validation_result, file_name)
 
     result: dict[str, Any] = {
