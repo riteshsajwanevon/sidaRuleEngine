@@ -11,6 +11,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from app.models.schemas import BuildingType, LocationType, Terrain
 from app.services.dxf_parser import parse_dxf_to_cad_model
 from app.services.validation_service import run_validation_from_cad_model
 from app.utils.file_utils import safe_stem, validate_extension
@@ -32,6 +33,10 @@ router = APIRouter()
 async def process_validate_dxf(
     file: UploadFile,
     rule_json: str = Form(...),
+    building_type: BuildingType = Form(...),
+    subtype: str = Form(...),
+    terrain: Terrain = Form(...),
+    location: LocationType = Form(...),
 ):
     t0 = time.perf_counter()
 
@@ -83,9 +88,10 @@ async def process_validate_dxf(
             cad_model,
             rules,
             stem,
-            # building_type="test",
-            # subtype="test",
-            # location="test",            
+            # building_type="test", Residential , Commercial, Industrial, Mall , Institutional, Other
+            # subtype="test",  Multiple Units , Grouping House ,Group Housing Flatted , Affordable Housing
+            # terrain="test",       hill , plain  
+            # Location    Rular  urban    
         )
         logger.info("Validation: %.2fs", time.perf_counter() - t2)
         

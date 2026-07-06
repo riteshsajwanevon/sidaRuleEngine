@@ -103,6 +103,117 @@ def _get_required_setbacks(road_rule: dict[str, Any], height: float) -> dict[str
 
 
 # ---------------------------------------------------------------------------
+# Exemption-breakdown diagnostics (calculate_far / calculate_building_height)
+# ---------------------------------------------------------------------------
+
+def _check_height_exemptions(metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """
+    Surface discrepancies between the drawn ("Height Of the Building after
+    exemptions", color 151) and byelaw-computed building height, plus any
+    individual exemption clause (stilt / 2nd stilt / service floor / mumty /
+    lift machine room) that failed to qualify.
+
+    Returns (pass_notes, fail_notes).
+    """
+    pass_list: list[str] = []
+    fail_list: list[str] = []
+
+    drawn    = metrics.get("building_height")
+    computed = metrics.get("computed_building_height")
+    if drawn is not None and computed is not None:
+        if metrics.get("building_height_mismatch"):
+            fail_list.append(
+                f"Building Height Mismatch : Drawn (color 151) = {drawn} m, "
+                f"Computed (post-exemption) = {computed} m — verify stilt / service floor / "
+                f"mumty / lift-machine-room heights and basement depth used for exemptions."
+            )
+        else:
+            pass_list.append(
+                f"Building Height Check : Drawn = {drawn} m matches Computed (post-exemption) = {computed} m"
+            )
+
+    breakdown = metrics.get("height_exempt_breakdown") or {}
+    if breakdown:
+        if breakdown.get("second_stilt_not_permitted_in_hilly"):
+            fail_list.append(
+                "2nd Stilt Floor : Not permitted in hilly areas — its height has been counted "
+                "towards Building Height."
+            )
+
+        if breakdown.get("stilt_height", 0) > 0 and not breakdown.get("stilt_exempt"):
+            pass_list.append(
+                f"Note — Stilt Floor Height Exemption not applied : height = {breakdown.get('stilt_height')} m "
+                f"(needs <= 2.4 m, plain area, qualifying parking/services use); counted towards Building Height."
+            )
+
+        if breakdown.get("service_floor_height", 0) > 0 and not breakdown.get("service_floor_exempt"):
+            pass_list.append(
+                f"Note — Service Floor Height Exemption not applied : height = "
+                f"{breakdown.get('service_floor_height')} m exceeds the 2.4 m limit; "
+                f"counted towards Building Height."
+            )
+
+        if breakdown.get("mumty_height", 0) > 0 and not breakdown.get("mumty_exempt"):
+            pass_list.append(
+                f"Note — Mumty Height Exemption not applied : height = {breakdown.get('mumty_height')} m "
+                f"(needs <= 2.4 m and terrace-feature ratio < 20%); counted towards Building Height."
+            )
+
+        if breakdown.get("machine_room_height", 0) > 0 and not breakdown.get("machine_room_exempt"):
+            pass_list.append(
+                f"Note — Lift Machine Room Height Exemption not applied : height = "
+                f"{breakdown.get('machine_room_height')} m (needs <= 4.2 m and terrace-feature ratio < 20%); "
+                f"counted towards Building Height."
+            )
+
+    return pass_list, fail_list
+
+
+def _check_far_exemptions(metrics: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """
+    Surface which FAR-relaxation clauses (stilt / service floor / balcony
+    projections) did not qualify and were therefore added to the chargeable
+    FAR area — informational, since `far_value` already reflects this.
+
+    Returns (pass_notes, fail_notes).
+    """
+    pass_list: list[str] = []
+    fail_list: list[str] = []
+
+    breakdown = metrics.get("far_exempt_breakdown") or {}
+    if not breakdown:
+        return pass_list, fail_list
+
+    if breakdown.get("stilt_floor_area_total", 0) > 0 and not breakdown.get("stilt_floor_qualifies"):
+        pass_list.append(
+            f"Note — Stilt Floor FAR Exemption not applied : "
+            f"{breakdown.get('stilt_floor_chargeable_area')} Sq.M added to chargeable FAR area "
+            f"(height/use does not qualify)."
+        )
+
+    if breakdown.get("service_floor_area_total", 0) > 0 and not breakdown.get("service_floor_qualifies"):
+        pass_list.append(
+            f"Note — Service Floor FAR Exemption not applied : "
+            f"{breakdown.get('service_floor_chargeable_area')} Sq.M added to chargeable FAR area "
+            f"(height > 2.4 m)."
+        )
+
+    total_projection_chargeable = round(
+        (breakdown.get("balcony_chargeable_area") or 0)
+        + (breakdown.get("chajja_chargeable_area") or 0)
+        + (breakdown.get("cantilever_projection_chargeable_area") or 0),
+        2,
+    )
+    if total_projection_chargeable > 0:
+        pass_list.append(
+            f"Note — Balcony/Projection FAR Exemption : {total_projection_chargeable} Sq.M beyond the "
+            f"{breakdown.get('balcony_limit_m')} m relaxed width added to chargeable FAR area."
+        )
+
+    return pass_list, fail_list
+
+
+# ---------------------------------------------------------------------------
 # Core validation logic
 # ---------------------------------------------------------------------------
 
@@ -110,8 +221,9 @@ def _run_validation(
     metrics: dict[str, Any],
     rules: list[dict[str, Any]],
     building_type: str,
-    subtype: str, 
-    location: str
+    subtype: str,
+    terrain: str,
+    location: str,
 ) -> dict[str, Any]:
     """
     Validate derived metrics against the hierarchical rule.json schema.
@@ -122,6 +234,13 @@ def _run_validation(
     far_value          = metrics["far_value"]
     ground_coverage_percentage = metrics["ground_coverage_percentage"]
     building_height    = metrics["building_height"]
+
+    # Exemption-breakdown diagnostics — independent of rule.json matching,
+    # so computed up front and merged into every return path below.
+    height_exempt_pass, height_exempt_fail = _check_height_exemptions(metrics)
+    far_exempt_pass,    far_exempt_fail    = _check_far_exemptions(metrics)
+    exempt_pass_list = height_exempt_pass + far_exempt_pass
+    exempt_fail_list = height_exempt_fail + far_exempt_fail
 
     match = _get_applicable_rule(plot_area, road_width, rules)
 
@@ -136,13 +255,13 @@ def _run_validation(
             "failures": [
                 f"Plot Area : In Map = {plot_area} Sq.M does not fall within any "
                 f"defined plot area range. Available ranges: {ranges}."
-            ],
-            "details": [],
+            ] + exempt_fail_list,
+            "details": exempt_pass_list,
             "applicable_rule": None,
         }
 
-    pass_list: list[str] = []
-    fail_list: list[str] = []
+    pass_list: list[str] = list(exempt_pass_list)
+    fail_list: list[str] = list(exempt_fail_list)
     rule = match["rule"]
 
     # Plot-level checks
@@ -266,7 +385,9 @@ def _build_report(
         {"label": "Road Width",       "value": metrics["road_width"],             "unit": "M"},
         {"label": "FAR Area",         "value": metrics["far_area"],               "unit": "Sq.M"},
         {"label": "FAR",              "value": metrics["far_value"],              "unit": ""},
-        {"label": "Building Height",  "value": metrics["building_height"],        "unit": "M"},
+        {"label": "Building Height (Drawn)",          "value": metrics["building_height"],           "unit": "M"},
+        {"label": "Building Height (Computed, post-exemption)",
+         "value": metrics.get("computed_building_height"), "unit": "M"},
         {"label": "Loading and Unloading Area", "value": metrics["loading_unloading_area"], "unit": "Sq.M"},
     ]
 
@@ -304,22 +425,29 @@ def _build_report(
 # ---------------------------------------------------------------------------
 
 def run_validation_from_cad_model(
-    model: CADModel,    
+    model: CADModel,
     rules: list[dict[str, Any]],
     building_type: str = "test",
     subtype: str = "test",
+    terrain: str = "test",
     location: str = "test",
     file_name: str = "Uploaded DXF",
-    
 ) -> dict[str, Any]:
     """
     Full validation pipeline: CADModel → metrics → rules → report.
 
     Parameters
     ----------
-    model     : CADModel produced by parse_dxf_to_cad_model()
-    rules     : Parsed rule_json list (hierarchical schema)
-    file_name : Used as report.file_name
+    model         : CADModel produced by parse_dxf_to_cad_model()
+    rules         : Parsed rule_json list (hierarchical schema)
+    building_type : "Residential" | "Commercial" | "Industrial" | "Mall" |
+                    "Institutional" | "Other"
+    subtype       : e.g. "Multiple Units", "Group Housing",
+                    "Group Housing Flatted", "Affordable Housing" …
+    terrain       : "Hill" | "Plain" — drives stilt/building-height
+                    exemption rules. NOT the same as ``location``.
+    location      : "Rural" | "Urban"
+    file_name     : Used as report.file_name
 
     Returns
     -------
@@ -333,8 +461,8 @@ def run_validation_from_cad_model(
     if not isinstance(rules, list) or not rules:
         raise ValueError("rules must be a non-empty list.")
 
-    metrics           = derive_metrics(model , building_type, subtype, location)
-    validation_result = _run_validation(metrics, rules , building_type, subtype, location)
+    metrics           = derive_metrics(model, building_type, subtype, terrain, location)
+    validation_result = _run_validation(metrics, rules, building_type, subtype, terrain, location)
     report            = _build_report(metrics, validation_result, file_name)
 
     result: dict[str, Any] = {

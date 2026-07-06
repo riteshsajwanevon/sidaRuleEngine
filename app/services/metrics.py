@@ -39,6 +39,21 @@ Ancillary (LWPOLYLINE, area or sum_area):
  221  → loading/unloading
   94  → rain water harvesting
 
+FAR-exemption geometry (LWPOLYLINE area / LINE height, see Section 4 of the
+SIDA / UGIDCR / UHUDA byelaws for the exemption clauses these implement):
+   5  → stilt floor boundary     (area)   — FLOOR-STILT layer
+  21  → stilt floor height       (length) — bottom of beam, qualifies <= 2.4 m
+  32  → basement boundary        (sum area) — FLOOR-BF1/BF2… layers, always FAR-exempt
+   8  → service floor            (sum area) — FLOOR-SERVICE layer
+  89  → service floor height     (length) — qualifies <= 2.4 m
+  35  → cantilever balcony       (sum area, threshold-based)
+  85  → chajja projection        (sum area, threshold-based)
+ 219  → cantilever projection    (sum area, threshold-based)
+ 187  → pump room                (sum area)
+ 188  → air conditioning room    (sum area)
+ 191  → open transformer / electric substation (sum area)
+ 185  → watchman shelter/booth   (sum area)
+
 Extension points
 ----------------
 Future geometry validators import from here:
@@ -60,7 +75,7 @@ from app.models.cad_model import CADModel, DxfEntity
 # ---------------------------------------------------------------------------
 SCALE: float = 1.0
 
-NON_FAR:dist[str,int] = {
+NON_FAR: dict[str, int] = {
     'guard_room_area' : 182,
     'meter_room_area' :192,
     'mumty_area'  :9,
@@ -69,6 +84,43 @@ NON_FAR:dist[str,int] = {
     'shaft_area' : 11,
     'lift_area' :22
 }
+
+# ---------------------------------------------------------------------------
+# FAR-exemption color codes (Section 4, FAR relaxations, SIDA byelaws)
+# ---------------------------------------------------------------------------
+STILT_FLOOR_BOUNDARY_COLOR:  int = 5
+STILT_FLOOR_HEIGHT_COLOR:    int = 21
+BASEMENT_BOUNDARY_COLOR:     int = 32
+SERVICE_FLOOR_COLOR:         int = 8
+SERVICE_FLOOR_HEIGHT_COLOR:  int = 89
+CANTILEVER_BALCONY_COLOR:    int = 35
+CHAJJA_PROJECTION_COLOR:     int = 85
+CANTILEVER_PROJECTION_COLOR: int = 219
+PUMP_ROOM_COLOR:             int = 187
+AC_ROOM_COLOR:               int = 188
+OPEN_TRANSFORMER_COLOR:      int = 191
+WATCHMAN_SHELTER_COLOR:      int = 185
+
+# Height / width thresholds from the byelaws
+STILT_HEIGHT_LIMIT_M:          float = 2.4
+SERVICE_FLOOR_HEIGHT_LIMIT_M:  float = 2.4
+BALCONY_LIMIT_INDUSTRIAL_M:    float = 1.2   # Industries: relaxed till 1.2 m width
+BALCONY_LIMIT_OTHERS_M:        float = 1.8   # All other building types: relaxed till 1.8 m width
+
+# ---------------------------------------------------------------------------
+# Building-height color codes (Section 3, Building Height, SIDA byelaws)
+# ---------------------------------------------------------------------------
+BUILDING_HEIGHT_DRAWN_COLOR:   int = 151   # "Height Of the Building after exemptions" (as drawn)
+FLOOR_TO_FLOOR_HEIGHT_COLOR:   int = 233
+MUMTY_HEIGHT_COLOR:            int = 45
+MACHINE_ROOM_HEIGHT_COLOR:     int = 46
+PLINTH_HEIGHT_COLOR:           int = 105
+
+# Height relaxation thresholds
+MUMTY_HEIGHT_LIMIT_M:          float = 2.4
+MACHINE_ROOM_HEIGHT_LIMIT_M:   float = 4.2
+BASEMENT_ABOVE_GROUND_LIMIT_M: float = 1.2
+ROOF_FEATURE_HEIGHT_LIMIT_M:   float = 1.5   # water tank / parapet / chimney / decoration features
 
 # ---------------------------------------------------------------------------
 # Floor color-code mapping
@@ -192,6 +244,51 @@ def sum_area(entities: list[DxfEntity]) -> float:
     return sum(entity_area(e) for e in entities)
 
 
+def bbox_dims(entity: DxfEntity) -> tuple[float, float]:
+    """
+    Approximate (depth, length) of a projection polygon (balcony / chajja /
+    cantilever) from its axis-aligned bounding box.
+
+    ``depth`` is the smaller bounding-box dimension (assumed to be how far
+    the projection sticks out from the building line) and ``length`` is the
+    larger dimension (assumed to run along the building face). This is a
+    geometric approximation — good enough for rectangular projections, which
+    is how these elements are normally drawn.
+    """
+    pts = entity.points
+    if not pts:
+        return 0.0, 0.0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    w = (max(xs) - min(xs)) * SCALE
+    h = (max(ys) - min(ys)) * SCALE
+    return (w, h) if w <= h else (h, w)
+
+
+def chargeable_projection_area(entities: list[DxfEntity], limit_m: float) -> float:
+    """
+    Sum the FAR-chargeable portion of balcony/chajja/projection polygons.
+
+    Per byelaw Section 4.c.ii.4: projections are relaxed (exempt) up to
+    ``limit_m`` width; only the area beyond that width is counted in FAR.
+    For a projection of depth ``d`` and area ``A`` (running length
+    ``A / d``), the chargeable slice is::
+
+        A * (1 - limit_m / d)   if d > limit_m
+        0                       otherwise
+    """
+    total = 0.0
+    for ent in entities:
+        area = entity_area(ent)
+        if area <= 0:
+            continue
+        depth, _ = bbox_dims(ent)
+        if depth <= 0 or depth <= limit_m:
+            continue
+        total += area * (1 - (limit_m / depth))
+    return total
+
+
 # ---------------------------------------------------------------------------
 # CADModel query helpers
 # ---------------------------------------------------------------------------
@@ -226,12 +323,356 @@ def _fmt(v: float, decimals: int = 2) -> float:
     return round(v, decimals)
 
 
+# ---------------------------------------------------------------------------
+# FAR calculation
+# ---------------------------------------------------------------------------
+
+def calculate_far(
+    model: CADModel,
+    floor_areas: dict[str, float],
+    plot_area: float,
+    building_type: str = "",
+    subtype: str = "",
+    terrain: str = "",
+    stilt_height: float = 0.0,
+    service_floor_height: float = 0.0,
+    stilt_qualifies: bool = True,
+) -> dict[str, Any]:
+    """
+    Compute FAR area / FAR value from a CADModel, applying every FAR
+    relaxation clause in Section 4 ("Floor Area Ratio") of the SIDA /
+    UGIDCR / UHUDA byelaws.
+
+    FAR = Total chargeable Floor Area ÷ Plot Area, where the chargeable
+    floor area is the sum of all constructed floor plates **minus** the
+    areas the byelaws explicitly exempt.
+
+    Parameters
+    ----------
+    model : CADModel
+        Parsed drawing.
+    floor_areas : dict[str, float]
+        Ground + numbered floor areas already extracted via FLOOR_CODES
+        (as returned by the "Floor areas" step of ``derive_metrics``).
+    plot_area : float
+        Plot boundary area (color 7), used as the FAR denominator.
+    building_type : str
+        e.g. "industrial", "residential", "commercial" … Only "industrial"
+        changes the balcony/projection exemption threshold (1.2 m instead
+        of 1.8 m) per byelaw Section 4.c.ii.4.
+    subtype : str
+        e.g. "pharmaceutical". Pharmaceutical / related industries are
+        permitted more than one FAR-exempt service floor — since every
+        service-floor polygon on color 8 is already summed regardless of
+        count, this only affects reporting, not the arithmetic.
+    terrain : str
+        "hill" or "plain". Hilly plots do not permit a 2nd stilt floor —
+        kept for reporting/validation context; not required by the FAR
+        arithmetic itself (stilt area is exempt as a whole below).
+    stilt_height : float
+        Stilt floor clear height (color 21), used to test the <= 2.4 m
+        exemption condition.
+    service_floor_height : float
+        Service floor clear height (color 89), used to test the <= 2.4 m
+        exemption condition.
+    stilt_qualifies : bool
+        Whether the stilt floor otherwise qualifies as a byelaw "Stilt
+        Floor" (open >= 3 sides, used only for parking/services). This
+        cannot be derived from 2D geometry alone, so it is accepted as an
+        explicit input (defaults to True); if False, the stilt area is
+        fully chargeable to FAR regardless of height.
+
+    Returns
+    -------
+    dict with keys: far_area, far_value, and far_exempt_breakdown (a
+    dict of every exempted / chargeable component, for reporting).
+    """
+    is_industrial = building_type.strip().lower() == "industrial"
+    is_pharma = "pharma" in (subtype or "").strip().lower()
+    balcony_limit = BALCONY_LIMIT_INDUSTRIAL_M if is_industrial else BALCONY_LIMIT_OTHERS_M
+
+    # 1. Base constructed floor area — ground + numbered floors (already extracted).
+    total_floor_area = _fmt(sum(floor_areas.values()))
+
+    # 2. Stilt floor — FAR-exempt only if height <= 2.4 m AND it otherwise
+    #    qualifies as a byelaw "Stilt Floor". Stilt polygons are never part
+    #    of `floor_areas`, so a non-qualifying stilt floor's area must be
+    #    *added* to the chargeable total (it counts as ordinary floor area).
+    stilt_area_total = _fmt(_sum_area(model, STILT_FLOOR_BOUNDARY_COLOR))
+    stilt_ok = stilt_qualifies and 0 < stilt_height <= STILT_HEIGHT_LIMIT_M
+    stilt_exempt_area = stilt_area_total if stilt_ok else 0.0
+    stilt_chargeable_area = 0.0 if stilt_ok else stilt_area_total
+    total_floor_area += stilt_chargeable_area
+
+    # 3. Basement — always fully FAR-exempt (height only affects Building
+    #    Height, never FAR). Basement is never part of `floor_areas`.
+    basement_exempt_area = _fmt(_sum_area(model, BASEMENT_BOUNDARY_COLOR))
+
+    # 4. Service floor — FAR-exempt if height <= 2.4 m. Pharma / related
+    #    industries may stack more than one service floor, all exempt.
+    service_floor_area_total = _fmt(_sum_area(model, SERVICE_FLOOR_COLOR))
+    service_floor_ok = 0 < service_floor_height <= SERVICE_FLOOR_HEIGHT_LIMIT_M
+    service_floor_exempt_area = service_floor_area_total if service_floor_ok else 0.0
+    service_floor_chargeable_area = 0.0 if service_floor_ok else service_floor_area_total
+    total_floor_area += service_floor_chargeable_area
+
+    # 5. Balcony / chajja / cantilever projections — exempt up to the
+    #    threshold width; only the excess is chargeable. These polygons are
+    #    never part of `floor_areas`, so the chargeable slice is added.
+    balcony_entities    = model.get_entities(CANTILEVER_BALCONY_COLOR, "LWPOLYLINE")
+    chajja_entities     = model.get_entities(CHAJJA_PROJECTION_COLOR, "LWPOLYLINE")
+    projection_entities = model.get_entities(CANTILEVER_PROJECTION_COLOR, "LWPOLYLINE")
+
+    balcony_chargeable    = _fmt(chargeable_projection_area(balcony_entities, balcony_limit))
+    chajja_chargeable     = _fmt(chargeable_projection_area(chajja_entities, balcony_limit))
+    projection_chargeable = _fmt(chargeable_projection_area(projection_entities, balcony_limit))
+    total_floor_area += balcony_chargeable + chajja_chargeable + projection_chargeable
+
+    # 6. Ancillary rooms — always fully FAR-exempt. These sit inside the
+    #    already-extracted floor polygons, so they are *deducted*.
+    guard_room_area  = _fmt(_area(model, NON_FAR["guard_room_area"]))
+    meter_room_area  = _fmt(_area(model, NON_FAR["meter_room_area"]))
+    mumty_area       = _fmt(_area(model, NON_FAR["mumty_area"]))
+    stairs_area      = _fmt(_sum_area(model, NON_FAR["stairs_area"]))
+    fire_stairs_area = _fmt(_sum_area(model, NON_FAR["fire_stairs"]))
+    shaft_area       = _fmt(_sum_area(model, NON_FAR["shaft_area"]))
+    lift_area        = _fmt(_sum_area(model, NON_FAR["lift_area"]))
+    pump_room_area       = _fmt(_sum_area(model, PUMP_ROOM_COLOR))
+    ac_room_area         = _fmt(_sum_area(model, AC_ROOM_COLOR))
+    substation_area      = _fmt(_sum_area(model, OPEN_TRANSFORMER_COLOR))
+    watchman_booth_area  = _fmt(_sum_area(model, WATCHMAN_SHELTER_COLOR))
+
+    ancillary_exempt_area = _fmt(
+        guard_room_area + meter_room_area + mumty_area + stairs_area +
+        fire_stairs_area + shaft_area + lift_area + pump_room_area +
+        ac_room_area + substation_area + watchman_booth_area
+    )
+    total_floor_area = _fmt(total_floor_area - ancillary_exempt_area)
+
+    far_area = _fmt(total_floor_area)
+    far_value = _fmt(far_area / plot_area) if plot_area else 0.0
+
+    return {
+        "far_area": far_area,
+        "far_value": far_value,
+        "far_exempt_breakdown": {
+            "is_industrial": is_industrial,
+            "is_pharma": is_pharma,
+            "balcony_limit_m": balcony_limit,
+            "stilt_floor_area_total": stilt_area_total,
+            "stilt_floor_qualifies": stilt_ok,
+            "stilt_floor_exempt_area": _fmt(stilt_exempt_area),
+            "stilt_floor_chargeable_area": _fmt(stilt_chargeable_area),
+            "basement_exempt_area": basement_exempt_area,
+            "service_floor_area_total": service_floor_area_total,
+            "service_floor_qualifies": service_floor_ok,
+            "service_floor_exempt_area": _fmt(service_floor_exempt_area),
+            "service_floor_chargeable_area": _fmt(service_floor_chargeable_area),
+            "balcony_chargeable_area": balcony_chargeable,
+            "chajja_chargeable_area": chajja_chargeable,
+            "cantilever_projection_chargeable_area": projection_chargeable,
+            "guard_room_area": guard_room_area,
+            "meter_room_area": meter_room_area,
+            "mumty_area": mumty_area,
+            "stairs_area": stairs_area,
+            "fire_stairs_area": fire_stairs_area,
+            "shaft_area": shaft_area,
+            "lift_area": lift_area,
+            "pump_room_area": pump_room_area,
+            "ac_room_area": ac_room_area,
+            "substation_area": substation_area,
+            "watchman_booth_area": watchman_booth_area,
+            "total_ancillary_exempt_area": ancillary_exempt_area,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Building Height calculation
+# ---------------------------------------------------------------------------
+
+def calculate_building_height(
+    model: CADModel,
+    floor_areas: dict[str, float],
+    building_type: str = "",
+    terrain: str = "",
+    stilt_height: float = 0.0,
+    stilt_qualifies: bool = True,
+    second_stilt_height: float = 0.0,
+    second_stilt_used_for_parking: bool = True,
+    service_floor_height: float = 0.0,
+    basement_height_above_ground: float = 0.0,
+    terrace_ratio_within_limit: bool = True,
+    roof_feature_height: float = 0.0,
+) -> dict[str, Any]:
+    """
+    Compute Building Height from a CADModel, applying every height
+    relaxation clause in Section 3 ("Building Height") of the SIDA /
+    UGIDCR / UHUDA byelaws, and cross-check the result against the height
+    the drawing already declares (color 151, "Height Of the Building after
+    exemptions") so a mismatch between the architect's drawn value and the
+    byelaw-computed value can be flagged.
+
+    Building Height (measured from plinth top) = the floor-to-floor stack
+    of ordinary levels + every height-contributing feature that does NOT
+    qualify for exemption.
+
+    Parameters
+    ----------
+    model : CADModel
+    floor_areas : dict[str, float]
+        Ground + numbered floor areas — drives the floor count multiplied
+        by the typical floor-to-floor height (color 233).
+    building_type : str
+        Kept for context/messaging; the height thresholds below are not
+        building-type specific (unlike the FAR balcony threshold).
+    terrain : str
+        "hill" or "plain".
+        - Hilly areas: "No relaxation in building height for stilt floor
+          or sloping roof" — a stilt floor is always counted, and a 2nd
+          stilt floor is not permitted at all.
+        - Plain areas: stilt floor exemption logic follows the same
+          <= 2.4 m rule used for FAR.
+    stilt_height : float
+        Stilt floor clear height (color 21).
+    stilt_qualifies : bool
+        Whether the stilt floor otherwise qualifies as a byelaw "Stilt
+        Floor" (open >= 3 sides, parking/services use only). Not
+        derivable from 2D geometry alone.
+    second_stilt_height : float
+        Height of a 2nd stilt floor, if present. Always counted towards
+        Building Height when used for parking (even though it remains
+        FAR-exempt), and is invalid entirely in hilly areas.
+    service_floor_height : float
+        Service floor clear height (color 89). Exempt if <= 2.4 m.
+    basement_height_above_ground : float
+        Basement ceiling height above natural ground level. No dedicated
+        CAD color exists for this measurement, so it is accepted as an
+        explicit input (defaults to 0 = fully below ground = exempt).
+        Exempt if <= 1.2 m; only the excess beyond 1.2 m counts.
+    terrace_ratio_within_limit : bool
+        Whether (mumty + lift room + roof tank + chimney + parapet +
+        decoration features) / total terrace area is < 20% — the umbrella
+        condition the byelaw attaches to every terrace-level relaxation.
+        Defaults to True; if False, none of the terrace features below
+        are exempt regardless of their individual height.
+    roof_feature_height : float
+        Combined roof-top water tank / parapet / chimney / decoration
+        feature height, if tracked (no dedicated color per feature in the
+        layer spec) — exempt up to 1.5 m, gated by
+        ``terrace_ratio_within_limit``.
+
+    Returns
+    -------
+    dict with keys: computed_building_height, drawn_building_height,
+    height_mismatch (bool, > 0.05 m tolerance), and
+    height_exempt_breakdown (every component + whether it was exempted).
+    """
+    is_hilly = (terrain or "").strip().lower().startswith("hill")
+
+    # 1. Drawn / declared height (architect-computed, color 151) — kept for
+    #    cross-validation, never blindly trusted as the final answer.
+    drawn_building_height = _fmt(_length(model, BUILDING_HEIGHT_DRAWN_COLOR))
+
+    # 2. Typical floor stack — floor-to-floor height x number of levels
+    #    already extracted as ordinary (non-exempt) floor plates.
+    floor_to_floor_height = _fmt(_length(model, FLOOR_TO_FLOOR_HEIGHT_COLOR))
+    num_levels = len(floor_areas)
+    floor_stack_height = _fmt(floor_to_floor_height * num_levels)
+
+    # 3. Stilt floor — exempt from height only in PLAIN areas, height
+    #    <= 2.4 m, and only if it otherwise qualifies. Hilly areas get
+    #    "No relaxation in building height for stilt floor" — always counted.
+    stilt_ok = (not is_hilly) and stilt_qualifies and 0 < stilt_height <= STILT_HEIGHT_LIMIT_M
+    stilt_counted_height = 0.0 if stilt_ok else stilt_height
+
+    # 4. 2nd stilt floor — not permitted at all in hilly areas; in plain
+    #    areas it always counts towards height (parking use or not).
+    second_stilt_not_permitted_in_hilly = is_hilly and second_stilt_height > 0
+    second_stilt_counted_height = 0.0 if is_hilly else second_stilt_height
+
+    # 5. Service floor — exempt from height if <= 2.4 m.
+    service_floor_ok = 0 < service_floor_height <= SERVICE_FLOOR_HEIGHT_LIMIT_M
+    service_floor_counted_height = 0.0 if service_floor_ok else service_floor_height
+
+    # 6. Basement — exempt if <= 1.2 m above ground; only the excess beyond
+    #    1.2 m counts towards Building Height.
+    basement_counted_height = _fmt(max(0.0, basement_height_above_ground - BASEMENT_ABOVE_GROUND_LIMIT_M))
+
+    # 7. Mumty — exempt <= 2.4 m, gated by the 20% terrace-area condition.
+    mumty_height = _fmt(_length(model, MUMTY_HEIGHT_COLOR))
+    mumty_ok = terrace_ratio_within_limit and 0 < mumty_height <= MUMTY_HEIGHT_LIMIT_M
+    mumty_counted_height = 0.0 if mumty_ok else mumty_height
+
+    # 8. Lift machine room — exempt <= 4.2 m, gated by the same condition.
+    machine_room_height = _fmt(_length(model, MACHINE_ROOM_HEIGHT_COLOR))
+    machine_room_ok = terrace_ratio_within_limit and 0 < machine_room_height <= MACHINE_ROOM_HEIGHT_LIMIT_M
+    machine_room_counted_height = 0.0 if machine_room_ok else machine_room_height
+
+    # 9. Roof-top water tank / parapet / chimney / decoration features —
+    #    exempt <= 1.5 m each, same 20% gate. Tracked as one combined value
+    #    since no per-feature color code exists in the layer spec.
+    roof_feature_ok = terrace_ratio_within_limit and 0 < roof_feature_height <= ROOF_FEATURE_HEIGHT_LIMIT_M
+    roof_feature_counted_height = 0.0 if roof_feature_ok else roof_feature_height
+
+    computed_building_height = _fmt(
+        floor_stack_height
+        + stilt_counted_height
+        + second_stilt_counted_height
+        + service_floor_counted_height
+        + basement_counted_height
+        + mumty_counted_height
+        + machine_room_counted_height
+        + roof_feature_counted_height
+    )
+
+    height_mismatch = abs(computed_building_height - drawn_building_height) > 0.05
+
+    return {
+        "computed_building_height": computed_building_height,
+        "drawn_building_height": drawn_building_height,
+        "height_mismatch": height_mismatch,
+        "height_exempt_breakdown": {
+            "is_hilly": is_hilly,
+            "floor_to_floor_height": floor_to_floor_height,
+            "num_levels": num_levels,
+            "floor_stack_height": floor_stack_height,
+            "stilt_height": stilt_height,
+            "stilt_exempt": stilt_ok,
+            "stilt_counted_height": _fmt(stilt_counted_height),
+            "second_stilt_height": second_stilt_height,
+            "second_stilt_not_permitted_in_hilly": second_stilt_not_permitted_in_hilly,
+            "second_stilt_counted_height": _fmt(second_stilt_counted_height),
+            "service_floor_height": service_floor_height,
+            "service_floor_exempt": service_floor_ok,
+            "service_floor_counted_height": _fmt(service_floor_counted_height),
+            "basement_height_above_ground": basement_height_above_ground,
+            "basement_counted_height": basement_counted_height,
+            "mumty_height": mumty_height,
+            "mumty_exempt": mumty_ok,
+            "mumty_counted_height": _fmt(mumty_counted_height),
+            "machine_room_height": machine_room_height,
+            "machine_room_exempt": machine_room_ok,
+            "machine_room_counted_height": _fmt(machine_room_counted_height),
+            "roof_feature_height": roof_feature_height,
+            "roof_feature_exempt": roof_feature_ok,
+            "roof_feature_counted_height": _fmt(roof_feature_counted_height),
+            "terrace_ratio_within_limit": terrace_ratio_within_limit,
+        },
+    }
+
 
 # ---------------------------------------------------------------------------
 # Public metric derivation
 # ---------------------------------------------------------------------------
 
-def derive_metrics(model: CADModel , building_type: str, subtype: str, location: str) -> dict[str, Any]:
+def derive_metrics(
+    model: CADModel,
+    building_type: str,
+    subtype: str,
+    terrain: str,
+    location: str = "",
+) -> dict[str, Any]:
     """
     Derive all SIDA architectural metrics from a CADModel.
 
@@ -242,6 +683,24 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     ----------
     model : CADModel
         Output of parse_dxf_to_cad_model().
+    building_type : str
+        "Residential" | "Commercial" | "Industrial" | "Mall" |
+        "Institutional" | "Other". Drives the FAR balcony/projection
+        exemption threshold (1.2 m for Industrial, 1.8 m otherwise).
+    subtype : str
+        e.g. "Multiple Units", "Group Housing", "Group Housing Flatted",
+        "Affordable Housing", "Pharmaceutical" … Only affects reporting
+        (e.g. pharma multi-service-floor context); free-form since the
+        byelaw subtype list is long and building-type specific.
+    terrain : str
+        "Hill" | "Plain". Governs the stilt-floor / 2nd-stilt-floor
+        Building Height exemption rules (Section 3 of the byelaws) —
+        NOT the same field as ``location``.
+    location : str
+        "Rural" | "Urban". Not yet used in the geometry/exemption
+        arithmetic (kept for future rule.json matching and for
+        echoing back in the report); accepted so callers can pass it
+        through without it being silently dropped.
 
     Returns
     -------
@@ -284,14 +743,13 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     stilth_floor_height = _fmt(_length(model, 21))
     machine_room_height = _fmt(_length(model, 46))
 
-    # NON FAR
+    # NON FAR (also recomputed inside calculate_far() for the FAR breakdown;
+    # kept here too since total_ground_floor_area / chargable_area need them)
     guard_room_area             = _fmt(_area(model, 182))
     meter_room_area             = _fmt(_area(model, 192))
     mumty_area             = _fmt(_area(model, 9))
     stairs_area            = _fmt(_sum_area(model, 115))
     fire_stairs            = _fmt(_sum_area(model, 116))
-    shaft_area            = _fmt(_sum_area(model, 11))
-    lift_area             = _fmt(_sum_area(model, 22))
 
     # --- Parking ---
     open_parking_area       = _fmt(_sum_area(model, 20))
@@ -310,16 +768,38 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
 
     # --- Derived totals ---
     ground_area             = floor_areas.get("ground", 0.0)
-    non_far_area = (guard_room_area + meter_room_area + mumty_area + stairs_area + fire_stairs + shaft_area + lift_area)
 
     total_ground_floor_area = _fmt(ground_area + guard_room_area + meter_room_area)
 
-
     total_floor_area     = _fmt(sum(floor_areas.values()))
 
-    far_area                = _fmt(total_floor_area - non_far_area)
+    # --- FAR (handles stilt / basement / service floor / balcony-projection
+    #     / ancillary-room exemptions — see calculate_far()) ---
+    far_result = calculate_far(
+        model=model,
+        floor_areas=floor_areas,
+        plot_area=plot_area,
+        building_type=building_type,
+        subtype=subtype,
+        terrain=terrain,
+        stilt_height=stilth_floor_height,
+        service_floor_height=_fmt(_length(model, SERVICE_FLOOR_HEIGHT_COLOR)),
+    )
+    far_area  = far_result["far_area"]
+    far_value = far_result["far_value"]
 
-    
+    # --- Building Height (handles stilt / 2nd-stilt / service floor /
+    #     basement / mumty / lift-machine-room / roof-feature exemptions
+    #     and hilly-area restrictions — see calculate_building_height()) ---
+    height_result = calculate_building_height(
+        model=model,
+        floor_areas=floor_areas,
+        building_type=building_type,
+        terrain=terrain,
+        stilt_height=stilth_floor_height,
+    )
+    computed_building_height = height_result["computed_building_height"]
+    building_height_mismatch = height_result["height_mismatch"]
 
     ground_coverage_percentage = _fmt(ground_coverage / plot_area * 100) if plot_area else 0.0
 
@@ -328,9 +808,6 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     chargable_area          = _fmt(sum(floor_areas.values()) + mumty_area + guard_room_area + meter_room_area)
 
     covered_area            = chargable_area
-
-
-    far_value               = _fmt(far_area / plot_area) if plot_area else 0.0
 
     # --- Parking permissible ---
     plot_usage = 0.3 if plot_area < 1000 else 0.5
@@ -341,6 +818,11 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
     permissible_mechanical_parking = _fmt(ecs * 64)
     
     return {
+        # Request context (echoed back for reporting/debugging)
+        "building_type": building_type,
+        "subtype":       subtype,
+        "terrain":       terrain,
+        "location":      location,
         # Plot
         "plot_area":               plot_area,
         # Floors
@@ -362,9 +844,11 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
         # Road / height
         "road_width":      road_width,
         "building_height": building_height,
+        "computed_building_height": computed_building_height,
+        "building_height_mismatch": building_height_mismatch,
+        "height_exempt_breakdown":  height_result["height_exempt_breakdown"],
         "mumty_height":    mumty_height,
         "plinth_height": plinth_height,
-        "mumty_height": mumty_height,
         "stilth_floor_height": stilth_floor_height,
         "machine_room_height": machine_room_height,
 
@@ -374,6 +858,7 @@ def derive_metrics(model: CADModel , building_type: str, subtype: str, location:
         "ground_coverage_percentage": ground_coverage_percentage,
         "far_area":                far_area,
         "far_value":               far_value,
+        "far_exempt_breakdown":    far_result["far_exempt_breakdown"],
         "open_area":               open_area,
         "chargable_area":          chargable_area,
         "covered_area":            covered_area,
