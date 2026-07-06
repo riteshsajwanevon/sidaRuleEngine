@@ -87,11 +87,11 @@ async def process_validate_dxf(
             run_validation_from_cad_model,
             cad_model,
             rules,
+            building_type.value,
+            subtype,
+            terrain.value,
+            location.value,
             stem,
-            # building_type="test", Residential , Commercial, Industrial, Mall , Institutional, Other
-            # subtype="test",  Multiple Units , Grouping House ,Group Housing Flatted , Affordable Housing
-            # terrain="test",       hill , plain  
-            # Location    Rular  urban    
         )
         logger.info("Validation: %.2fs", time.perf_counter() - t2)
         
