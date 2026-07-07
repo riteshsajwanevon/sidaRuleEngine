@@ -36,7 +36,8 @@ Ancillary (LWPOLYLINE, area or sum_area):
  184  → canopy
  115  → stairs           (sum)
  116  → fire stairs      (sum)
- 221  → loading/unloading
+ 221  → loading/unloading (sum_area — used only for the loading/unloading
+        validation rule, not a floor-area total)
   94  → rain water harvesting
 
 FAR-exemption geometry (LWPOLYLINE area / LINE height, see Section 4 of the
@@ -321,6 +322,27 @@ def _parallel_dist(model: CADModel, color_a: int, color_b: int) -> float:
 
 def _fmt(v: float, decimals: int = 2) -> float:
     return round(v, decimals)
+
+
+# ---------------------------------------------------------------------------
+# Loading / Unloading area requirement
+# ---------------------------------------------------------------------------
+LOADING_UNLOADING_BASE_AREA_SQM: float = 26.25
+LOADING_UNLOADING_FAR_AREA_DIVISOR: float = 1000.0
+
+
+def calculate_required_loading_unloading_area(far_area: float) -> float:
+    """
+    Required Loading/Unloading area, scaled by FAR area:
+
+        factor = far_area / 1000
+        required = 26.25                  if factor <= 1
+        required = 26.25 * factor          otherwise
+    """
+    factor = far_area / LOADING_UNLOADING_FAR_AREA_DIVISOR
+    if factor <= 1:
+        return _fmt(LOADING_UNLOADING_BASE_AREA_SQM)
+    return _fmt(LOADING_UNLOADING_BASE_AREA_SQM * factor)
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +810,8 @@ def derive_metrics(
     far_area  = far_result["far_area"]
     far_value = far_result["far_value"]
 
+    required_loading_unloading_area = calculate_required_loading_unloading_area(far_area)
+
     # --- Building Height (handles stilt / 2nd-stilt / service floor /
     #     basement / mumty / lift-machine-room / roof-feature exemptions
     #     and hilly-area restrictions — see calculate_building_height()) ---
@@ -881,6 +905,7 @@ def derive_metrics(
         "canopy_area":             canopy_area,
         "stairs_area":             stairs_area,
         "fire_stairs":             fire_stairs,
-        "loading_unloading_area":  loading_unloading_area,
+        "loading_unloading_area":          loading_unloading_area,
+        "required_loading_unloading_area": required_loading_unloading_area,
         "rain_water_harvesting":   rain_water_harvesting,
     }

@@ -284,6 +284,27 @@ def _run_validation(
                 f"Ground Coverage Percent : In Map = {ground_coverage_percentage}%, "
                 f"Allowed <= {float(allowed_cov):.2f}%"
             )
+    # Only for IT Industries (subtype != "IT Units") do we check the loading/unloading area requirement.
+    # Loading/Unloading area: required = 26.25 Sq.M, scaled up by
+    # (FAR area / 1000) once FAR area exceeds 1000 Sq.M — see
+    # calculate_required_loading_unloading_area() in metrics.py.
+    # rule.json may override the computed value via "min_loading_unloading_area".
+    if building_type.lower() == "it_industries" and subtype.lower() != "it_units":
+        required_loading_area = rule.get("min_loading_unloading_area")
+        if required_loading_area is None:
+            required_loading_area = metrics.get("required_loading_unloading_area")
+        if required_loading_area is not None:
+            loading_unloading_area = metrics.get("loading_unloading_area", 0.0)
+            if loading_unloading_area < float(required_loading_area):
+                fail_list.append(
+                    f"Loading/Unloading Area : Allowed >= {required_loading_area} Sq.M, "
+                    f"In Map = {loading_unloading_area} Sq.M"
+                )
+            else:
+                pass_list.append(
+                    f"Loading/Unloading Area : In Map = {loading_unloading_area} Sq.M, "
+                    f"Allowed >= {required_loading_area} Sq.M"
+                )
 
     # Road width mismatch — diagnostic failure, no further checks possible
     if not match["success"]:
@@ -388,7 +409,9 @@ def _build_report(
         {"label": "Building Height (Drawn)",          "value": metrics["building_height"],           "unit": "M"},
         {"label": "Building Height (Computed, post-exemption)",
          "value": metrics.get("computed_building_height"), "unit": "M"},
-        {"label": "Loading and Unloading Area", "value": metrics["loading_unloading_area"], "unit": "Sq.M"},
+        {"label": "Loading and Unloading Area (Provided)", "value": metrics["loading_unloading_area"], "unit": "Sq.M"},
+        {"label": "Loading and Unloading Area (Required)",
+         "value": metrics.get("required_loading_unloading_area"), "unit": "Sq.M"},
     ]
 
     for key, label in [
