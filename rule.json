@@ -2,10 +2,11 @@
     {
       "plot_area_min": 300,
       "plot_area_max": 600,
- 
+
       "far": 1.2,
       "max_ground_coverage_percent": 65,
- 
+      "required_ecs": 1.0,
+
       "road_rules": [
         {
           "road_width_min": 12,

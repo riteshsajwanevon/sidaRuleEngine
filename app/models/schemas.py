@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ErrorResponse(BaseModel):
@@ -58,6 +58,11 @@ class ProcessValidateRequest(BaseModel):
     multipart/form-data request cannot bind a nested Pydantic model
     directly), but this class is the single source of truth for the
     field set and allowed values.
+
+    ``location`` is only required when ``building_type`` is Industrial —
+    the byelaw's Industrial FAR/height tables differ Rural vs Urban at the
+    same plot-size slab, so it's mandatory there; other building types
+    don't key their rules off it (yet), so it's optional for them.
     """
     building_type: BuildingType
     # Free-form: byelaw subtypes vary widely per building_type, e.g.
@@ -65,4 +70,10 @@ class ProcessValidateRequest(BaseModel):
     # "Affordable Housing", "Pharmaceutical and related industry", …
     subtype: str
     terrain: Terrain
-    location: LocationType
+    location: LocationType | None = None
+
+    @model_validator(mode="after")
+    def _require_location_for_industrial(self) -> "ProcessValidateRequest":
+        if self.building_type == BuildingType.industrial and self.location is None:
+            raise ValueError("location is required when building_type is Industrial")
+        return self

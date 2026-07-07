@@ -26,7 +26,7 @@ router = APIRouter()
     responses={
         200: {"description": "Validation completed"},
         400: {"description": "Unsupported file type, invalid rules, or invalid DXF"},
-        422: {"description": "No file or rule_json provided"},
+        422: {"description": "No file, no rule_json, or missing location for Industrial building_type"},
         500: {"description": "Internal processing or validation error"},
     },
 )
@@ -36,7 +36,7 @@ async def process_validate_dxf(
     building_type: BuildingType = Form(...),
     subtype: str = Form(...),
     terrain: Terrain = Form(...),
-    location: LocationType = Form(...),
+    location: LocationType | None = Form(None),
 ):
     t0 = time.perf_counter()
 
@@ -44,6 +44,15 @@ async def process_validate_dxf(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"status": "error", "message": "No file provided."},
+        )
+
+    # location (Rural/Urban) only matters for Industrial — the byelaw's
+    # Industrial FAR/height tables differ Rural vs Urban at the same
+    # plot-size slab, so it's mandatory there; optional otherwise.
+    if building_type == BuildingType.industrial and location is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "message": "location is required when building_type is Industrial."},
         )
 
     try:
@@ -90,7 +99,7 @@ async def process_validate_dxf(
             building_type.value,
             subtype,
             terrain.value,
-            location.value,
+            location.value if location else "",
             stem,
         )
         logger.info("Validation: %.2fs", time.perf_counter() - t2)

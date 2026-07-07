@@ -24,6 +24,7 @@ import logging
 from typing import Any
 
 from app.models.cad_model import CADModel
+from app.models.schemas import BuildingType
 from app.services.metrics import derive_metrics
 
 logger = logging.getLogger(__name__)
@@ -284,12 +285,16 @@ def _run_validation(
                 f"Ground Coverage Percent : In Map = {ground_coverage_percentage}%, "
                 f"Allowed <= {float(allowed_cov):.2f}%"
             )
-    # Only for IT Industries (subtype != "IT Units") do we check the loading/unloading area requirement.
+    # Only for Industrial buildings (excluding "IT Units" subtype) do we
+    # check the loading/unloading area requirement.
     # Loading/Unloading area: required = 26.25 Sq.M, scaled up by
     # (FAR area / 1000) once FAR area exceeds 1000 Sq.M — see
     # calculate_required_loading_unloading_area() in metrics.py.
     # rule.json may override the computed value via "min_loading_unloading_area".
-    if building_type.lower() == "it_industries" and subtype.lower() != "it_units":
+    if (
+        building_type.strip().lower() == BuildingType.industrial.value.lower()
+        and subtype.strip().lower() != "it units"
+    ):
         required_loading_area = rule.get("min_loading_unloading_area")
         if required_loading_area is None:
             required_loading_area = metrics.get("required_loading_unloading_area")
@@ -321,6 +326,23 @@ def _run_validation(
             pass_list.append(
                 f"Rain Water Harvesting Volume : In Map = {rwh_volume} Cu.M, "
                 f"Allowed >= {required_rwh_volume} Cu.M"
+            )
+
+    # Parking — Equivalent Car Space (ECS): the required-ECS *rate* (which
+    # varies by building type / plot-or-plinth-area band / terrain, per the
+    # byelaw's ECS table) comes from rule.json as "required_ecs". The
+    # area-per-ECS conversion of the drawn parking is implemented in
+    # calculate_provided_ecs() (metrics.py).
+    required_ecs = rule.get("required_ecs")
+    if required_ecs is not None:
+        provided_ecs = metrics.get("provided_ecs", 0.0)
+        if provided_ecs < float(required_ecs):
+            fail_list.append(
+                f"Parking (ECS) : Allowed >= {required_ecs} ECS, In Map = {provided_ecs} ECS"
+            )
+        else:
+            pass_list.append(
+                f"Parking (ECS) : In Map = {provided_ecs} ECS, Allowed >= {required_ecs} ECS"
             )
 
     # Road width mismatch — diagnostic failure, no further checks possible
@@ -403,7 +425,8 @@ def _run_validation(
             # Byelaw Section 11 exemption: Industrial buildings on plots
             # < 500 Sq.M are exempted from maintaining Green Cover entirely.
             is_industrial_green_exempt = (
-                building_type.strip().lower() == "industries" and plot_area < 500
+                building_type.strip().lower() == BuildingType.industrial.value.lower()
+                and plot_area < 500
             )
             if is_industrial_green_exempt:
                 pass_list.append(
@@ -485,6 +508,7 @@ def _build_report(
             fetched.append({"label": label, "value": metrics[key], "unit": "Sq.M"})
 
     fetched += [
+        {"label": "Provided Parking (ECS)", "value": metrics.get("provided_ecs"), "unit": "ECS"},
         {"label": "Guard/Meter Room Area",
          "value": round(metrics["guard_room_area"] + metrics["meter_room_area"], 2), "unit": "Sq.M"},
         {"label": "Mumty Area",           "value": metrics["mumty_area"],            "unit": "Sq.M"},

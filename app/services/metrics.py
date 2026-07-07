@@ -70,6 +70,7 @@ import math
 from typing import Any
 
 from app.models.cad_model import CADModel, DxfEntity
+from app.models.schemas import BuildingType, Terrain
 
 # ---------------------------------------------------------------------------
 # Scale factor  (1 mm = 1 m in the original project)
@@ -372,6 +373,81 @@ def calculate_required_rwh_volume(ground_coverage_area: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Equivalent Car Space (ECS) — Area-per-ECS norms (Section 6.a of the byelaws)
+# ---------------------------------------------------------------------------
+# The *required* ECS (how many spaces a given building type/plot-size band
+# must provide) comes from the byelaw's building-type/plot-area/plinth-area
+# table — that table is supplied at runtime via rule.json (e.g. a
+# "required_ecs" field), not hardcoded here. What IS implemented here is the
+# fixed area-per-ECS conversion table, used to turn drawn parking area into
+# a provided-ECS count for comparison against that required value.
+ECS_COVERED_STILT_AREA_SQM:       float = 28.0   # Covered parking (in-plot) / Stilt parking
+ECS_OPEN_TERRACE_AREA_SQM:        float = 23.0   # Open parking (in-plot) / Terrace parking
+ECS_BASEMENT_AREA_SQM:            float = 32.0   # Basement / next level above ground floor
+ECS_MECHANIZED_AREA_SQM:          float = 16.0   # Fully mechanized parking
+ECS_RESIDENTIAL_PLOTTED_AREA_SQM: float = 13.75  # Residential plotted development / "Parking Bay" (2.75m x 5m)
+
+
+def calculate_provided_ecs(
+    open_parking_area: float,
+    car_parking_area: float,
+    stilt_parking_area: float,
+    basement_parking_area: float,
+    mechanical_parking_area: float,
+    is_residential_plotted: bool = False,
+) -> dict[str, Any]:
+    """
+    Convert drawn parking areas into Equivalent Car Space (ECS) units, per
+    the byelaw's area-per-ECS norms (Section 6.a):
+
+        Covered parking (in-plot) / Stilt parking   -> 28 sq m / ECS
+        Open parking (in-plot) / Terrace parking     -> 23 sq m / ECS
+        Basement / next level above ground floor     -> 32 sq m / ECS
+        Fully mechanized parking                     -> 16 sq m / ECS
+        Residential plotted development (alternative
+        "Parking Bay" norm, 2.75 m x 5 m)             -> 13.75 sq m / ECS
+
+    `car_parking_area` (generic covered car-parking bays, drawn on any
+    floor) is grouped under the same "Covered parking" norm as stilt
+    parking — the byelaw doesn't give it a separate area-per-ECS figure.
+
+    If `is_residential_plotted` is True, the byelaw's flat 13.75 sq m/ECS
+    "Residential plotted development" norm applies to the total parking
+    area instead of the type-specific norms above.
+
+    Note: ECS is formally Circulation Area + Ramp Area + Parking Area —
+    only the drawn parking area is available here (ramp/circulation are
+    not separately extracted), so this is the parking-only component.
+    """
+    total_provided_area = _fmt(
+        open_parking_area + car_parking_area + stilt_parking_area
+        + basement_parking_area + mechanical_parking_area
+    )
+
+    if is_residential_plotted:
+        provided_ecs = total_provided_area / ECS_RESIDENTIAL_PLOTTED_AREA_SQM if total_provided_area else 0.0
+        breakdown = {"residential_plotted_ecs": _fmt(provided_ecs)}
+    else:
+        open_ecs       = open_parking_area / ECS_OPEN_TERRACE_AREA_SQM
+        covered_ecs     = (car_parking_area + stilt_parking_area) / ECS_COVERED_STILT_AREA_SQM
+        basement_ecs   = basement_parking_area / ECS_BASEMENT_AREA_SQM
+        mechanical_ecs = mechanical_parking_area / ECS_MECHANIZED_AREA_SQM
+        provided_ecs = open_ecs + covered_ecs + basement_ecs + mechanical_ecs
+        breakdown = {
+            "open_ecs":         _fmt(open_ecs),
+            "covered_stilt_ecs": _fmt(covered_ecs),
+            "basement_ecs":     _fmt(basement_ecs),
+            "mechanical_ecs":   _fmt(mechanical_ecs),
+        }
+
+    return {
+        "provided_ecs":                _fmt(provided_ecs),
+        "total_provided_parking_area": total_provided_area,
+        "ecs_breakdown":               breakdown,
+    }
+
+
+# ---------------------------------------------------------------------------
 # FAR calculation
 # ---------------------------------------------------------------------------
 
@@ -435,7 +511,7 @@ def calculate_far(
     dict with keys: far_area, far_value, and far_exempt_breakdown (a
     dict of every exempted / chargeable component, for reporting).
     """
-    is_industrial = building_type.strip().lower() == "industrial"
+    is_industrial = building_type.strip().lower() == BuildingType.industrial.value.lower()
     is_pharma = "pharma" in (subtype or "").strip().lower()
     balcony_limit = BALCONY_LIMIT_INDUSTRIAL_M if is_industrial else BALCONY_LIMIT_OTHERS_M
 
@@ -616,7 +692,7 @@ def calculate_building_height(
     height_mismatch (bool, > 0.05 m tolerance), and
     height_exempt_breakdown (every component + whether it was exempted).
     """
-    is_hilly = (terrain or "").strip().lower().startswith("hill")
+    is_hilly = (terrain or "").strip().lower().startswith(Terrain.hill.value.lower())
 
     # 1. Drawn / declared height (architect-computed, color 151) — kept for
     #    cross-validation, never blindly trusted as the final answer.
@@ -862,14 +938,20 @@ def derive_metrics(
 
     covered_area            = chargable_area
 
-    # --- Parking permissible ---
-    plot_usage = 0.3 if plot_area < 1000 else 0.5
-    ecs        = (far_area * plot_usage) / 100
-    permissible_open_parking       = _fmt(ecs * 23)
-    permissible_stilt_parking      = _fmt(ecs * 28)
-    permissible_basement_parking   = _fmt(ecs * 32)
-    permissible_mechanical_parking = _fmt(ecs * 64)
-    
+    # --- Equivalent Car Space (ECS) — see calculate_provided_ecs() ---
+    is_residential_plotted = (
+        building_type.strip().lower() == BuildingType.residential.value.lower()
+        and "plotted" in (subtype or "").strip().lower()
+    )
+    ecs_result = calculate_provided_ecs(
+        open_parking_area=open_parking_area,
+        car_parking_area=car_parking_area,
+        stilt_parking_area=stilt_parking_area,
+        basement_parking_area=basement_parking_area,
+        mechanical_parking_area=mechanical_parking_area,
+        is_residential_plotted=is_residential_plotted,
+    )
+
     return {
         # Request context (echoed back for reporting/debugging)
         "building_type": building_type,
@@ -921,11 +1003,10 @@ def derive_metrics(
         "mechanical_parking_area": mechanical_parking_area,
         "stilt_parking_area":      stilt_parking_area,
         "basement_parking_area":   basement_parking_area,
-        # Parking permissible
-        "permissible_open_parking":       permissible_open_parking,
-        "permissible_stilt_parking":      permissible_stilt_parking,
-        "permissible_basement_parking":   permissible_basement_parking,
-        "permissible_mechanical_parking": permissible_mechanical_parking,
+        # Parking — Equivalent Car Space (ECS)
+        "provided_ecs":                ecs_result["provided_ecs"],
+        "total_provided_parking_area": ecs_result["total_provided_parking_area"],
+        "ecs_breakdown":               ecs_result["ecs_breakdown"],
         # Ancillary
         "guard_room_area":              guard_room_area,
         "meter_room_area":              meter_room_area,
