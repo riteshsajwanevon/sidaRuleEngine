@@ -379,6 +379,47 @@ def _run_validation(
                     f"{labels[key]} Setback : In Map = {current} m, Allowed >= {req} m"
                 )
 
+        # Green/Landscape Area: required = 25% of total setback area, where
+        # setback area is built from each side's drawn setback-line length
+        # times the rule-required setback dimension for that side.
+        required_front = setbacks.get("front")
+        required_rear  = setbacks.get("rear")
+        required_side1 = setbacks.get("side1")
+        required_side2 = setbacks.get("side2")
+        if None not in (required_front, required_rear, required_side1, required_side2):
+            required_front = float(required_front)
+            required_rear  = float(required_rear)
+            required_side1 = float(required_side1)
+            required_side2 = float(required_side2)
+
+            all_set_back_area = (
+                (metrics["front_set_back_length"] * required_front)
+                + (metrics["rear_set_back_length"] * required_rear)
+                + ((metrics["side_setback_distance1_length"] - (required_front + required_rear)) * required_side1)
+                + ((metrics["side_setback_distance2_length"] - (required_front + required_rear)) * required_side2)
+            )
+            required_green_area = round(all_set_back_area * 0.25, 2)
+            green_area = metrics.get("landscape_area", 0.0)
+            # Byelaw Section 11 exemption: Industrial buildings on plots
+            # < 500 Sq.M are exempted from maintaining Green Cover entirely.
+            is_industrial_green_exempt = (
+                building_type.strip().lower() == "industries" and plot_area < 500
+            )
+            if is_industrial_green_exempt:
+                pass_list.append(
+                    f"Green/Landscape Area : Exempted (Industrial, Plot Area = {plot_area} Sq.M < 500 Sq.M)"
+                )
+            elif green_area < required_green_area:
+                fail_list.append(
+                    f"Green/Landscape Area : Allowed >= {required_green_area} Sq.M "
+                    f"(25% of setback area = {round(all_set_back_area, 2)} Sq.M), In Map = {green_area} Sq.M"
+                )
+            else:
+                pass_list.append(
+                    f"Green/Landscape Area : In Map = {green_area} Sq.M, Allowed >= {required_green_area} Sq.M "
+                    f"(25% of setback area = {round(all_set_back_area, 2)} Sq.M)"
+                )
+
     return {
         "status": "PASS" if not fail_list else "FAIL",
         "failures": fail_list,
