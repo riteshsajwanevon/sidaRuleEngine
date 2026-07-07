@@ -306,6 +306,23 @@ def _run_validation(
                     f"Allowed >= {required_loading_area} Sq.M"
                 )
 
+    # Rain Water Harvesting volume: required = 3.5 cu.m up to 400 Sq.M ground
+    # coverage, scaling above that as ((coverage - 400) * 0.5 / 50) + 3.5 —
+    # see calculate_required_rwh_volume() in metrics.py.
+    required_rwh_volume = metrics.get("required_rwh_volume")
+    if required_rwh_volume is not None:
+        rwh_volume = metrics.get("rwh_volume", 0.0)
+        if rwh_volume < float(required_rwh_volume):
+            fail_list.append(
+                f"Rain Water Harvesting Volume : Allowed >= {required_rwh_volume} Cu.M, "
+                f"In Map = {rwh_volume} Cu.M"
+            )
+        else:
+            pass_list.append(
+                f"Rain Water Harvesting Volume : In Map = {rwh_volume} Cu.M, "
+                f"Allowed >= {required_rwh_volume} Cu.M"
+            )
+
     # Road width mismatch — diagnostic failure, no further checks possible
     if not match["success"]:
         ranges = ", ".join(
@@ -412,6 +429,9 @@ def _build_report(
         {"label": "Loading and Unloading Area (Provided)", "value": metrics["loading_unloading_area"], "unit": "Sq.M"},
         {"label": "Loading and Unloading Area (Required)",
          "value": metrics.get("required_loading_unloading_area"), "unit": "Sq.M"},
+        {"label": "Rain Water Harvesting Volume (Provided)", "value": metrics.get("rwh_volume"), "unit": "Cu.M"},
+        {"label": "Rain Water Harvesting Volume (Required)",
+         "value": metrics.get("required_rwh_volume"), "unit": "Cu.M"},
     ]
 
     for key, label in [

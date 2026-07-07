@@ -346,6 +346,32 @@ def calculate_required_loading_unloading_area(far_area: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Rain Water Harvesting (RWH) requirement
+# ---------------------------------------------------------------------------
+RWH_AREA_COLOR:   int = 94   # RWH Tank (LWPOLYLINE, area)
+RWH_HEIGHT_COLOR: int = 92   # RWH Height (LINE, length)
+
+RWH_GROUND_COVERAGE_THRESHOLD_SQM: float = 400.0
+RWH_MIN_VOLUME_CUM:               float = 3.5
+RWH_EXCESS_FACTOR:                float = 0.5
+RWH_EXCESS_DIVISOR:               float = 50.0
+
+
+def calculate_required_rwh_volume(ground_coverage_area: float) -> float:
+    """
+    Required Rain Water Harvesting volume (cu.m), scaled by ground coverage
+    area:
+
+        required = 3.5                                              if ground_coverage_area <= 400
+        required = ((ground_coverage_area - 400) * 0.5) / 50 + 3.5   otherwise
+    """
+    if ground_coverage_area <= RWH_GROUND_COVERAGE_THRESHOLD_SQM:
+        return _fmt(RWH_MIN_VOLUME_CUM)
+    excess = ground_coverage_area - RWH_GROUND_COVERAGE_THRESHOLD_SQM
+    return _fmt((excess * RWH_EXCESS_FACTOR) / RWH_EXCESS_DIVISOR + RWH_MIN_VOLUME_CUM)
+
+
+# ---------------------------------------------------------------------------
 # FAR calculation
 # ---------------------------------------------------------------------------
 
@@ -782,11 +808,14 @@ def derive_metrics(
 
     # --- Ancillary ---
     
-    green_area             = _fmt(_sum_area(model, 60))
+    landscape_area             = _fmt(_sum_area(model, 60))
     canopy_area            = _fmt(_sum_area(model, 184))
     
     loading_unloading_area = _fmt(_sum_area(model, 221))
-    rain_water_harvesting  = _fmt(_sum_area(model, 94))
+    rain_water_harvesting  = _fmt(_sum_area(model, RWH_AREA_COLOR))
+    rwh_height              = _fmt(_length(model, RWH_HEIGHT_COLOR))
+    rwh_volume              = _fmt(rain_water_harvesting * rwh_height)
+    required_rwh_volume     = calculate_required_rwh_volume(ground_coverage)
 
     # --- Derived totals ---
     ground_area             = floor_areas.get("ground", 0.0)
@@ -901,11 +930,14 @@ def derive_metrics(
         "guard_room_area":              guard_room_area,
         "meter_room_area":              meter_room_area,
         "mumty_area":              mumty_area,
-        "green_area":              green_area,
+        "landscape_area":              landscape_area,
         "canopy_area":             canopy_area,
         "stairs_area":             stairs_area,
         "fire_stairs":             fire_stairs,
         "loading_unloading_area":          loading_unloading_area,
         "required_loading_unloading_area": required_loading_unloading_area,
         "rain_water_harvesting":   rain_water_harvesting,
+        "rwh_height":              rwh_height,
+        "rwh_volume":              rwh_volume,
+        "required_rwh_volume":     required_rwh_volume,
     }
