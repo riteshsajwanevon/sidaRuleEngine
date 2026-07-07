@@ -345,6 +345,29 @@ def _run_validation(
                 f"Parking (ECS) : In Map = {provided_ecs} ECS, Allowed >= {required_ecs} ECS"
             )
 
+    # Schools (Section 5.e.iii): 6.0 m of front setback is reserved for
+    # visitor parking before the boundary wall. The 6 m front-setback
+    # *dimension* is already enforced by the standard front-setback check
+    # above (via rule.json's required front setback for the School rule) —
+    # here we only check that "Street Parking for School" (color 183) has
+    # actually been drawn, i.e. that visitor parking is provided at all and
+    # not left unmanaged/empty. Nursery schools are excluded per the byelaw.
+    is_school = (
+        "school" in subtype.strip().lower()
+        and "nursery" not in subtype.strip().lower()
+    )
+    if is_school:
+        street_parking_for_school_area = metrics.get("street_parking_for_school_area", 0.0)
+        if street_parking_for_school_area <= 0:
+            fail_list.append(
+                "School Visitor Parking : 'Street Parking for School' area must be provided "
+                "within the front setback, In Map = 0 Sq.M"
+            )
+        else:
+            pass_list.append(
+                f"School Visitor Parking : In Map = {street_parking_for_school_area} Sq.M provided"
+            )
+
     # Road width mismatch — diagnostic failure, no further checks possible
     if not match["success"]:
         ranges = ", ".join(
@@ -400,6 +423,53 @@ def _run_validation(
                 pass_list.append(
                     f"{labels[key]} Setback : In Map = {current} m, Allowed >= {req} m"
                 )
+
+        # Rear-setback structures (Section 5.e.i.4 — Residential plots):
+        # Locked Garage / Servant Room / Store, each capped at 25 Sq.M
+        # individually, and cumulatively at 40% of the rear setback area.
+        is_residential = building_type.strip().lower() == BuildingType.residential.value.lower()
+        required_rear_setback = setbacks.get("rear")
+        if is_residential and required_rear_setback is not None:
+            REAR_STRUCTURE_MAX_AREA_SQM = 25.0
+            REAR_STRUCTURES_MAX_PERCENT = 0.40
+
+            for label, area in (
+                ("Locked Garage", metrics.get("garage_area", 0.0)),
+                ("Servant Room",  metrics.get("servant_quarters_area", 0.0)),
+                ("Store",         metrics.get("store_area", 0.0)),
+            ):
+                if area <= 0:
+                    continue
+                if area > REAR_STRUCTURE_MAX_AREA_SQM:
+                    fail_list.append(
+                        f"{label} Area : Allowed <= {REAR_STRUCTURE_MAX_AREA_SQM} Sq.M, In Map = {area} Sq.M"
+                    )
+                else:
+                    pass_list.append(
+                        f"{label} Area : In Map = {area} Sq.M, Allowed <= {REAR_STRUCTURE_MAX_AREA_SQM} Sq.M"
+                    )
+
+            rear_structures_area = round(
+                metrics.get("garage_area", 0.0)
+                + metrics.get("servant_quarters_area", 0.0)
+                + metrics.get("store_area", 0.0),
+                2,
+            )
+            if rear_structures_area > 0:
+                rear_setback_area = round(metrics["rear_set_back_length"] * float(required_rear_setback), 2)
+                max_rear_structures_area = round(rear_setback_area * REAR_STRUCTURES_MAX_PERCENT, 2)
+                if rear_structures_area > max_rear_structures_area:
+                    fail_list.append(
+                        f"Rear Setback Structures (Garage/Servant Room/Store) : Allowed <= "
+                        f"{max_rear_structures_area} Sq.M (40% of rear setback area = {rear_setback_area} Sq.M), "
+                        f"In Map = {rear_structures_area} Sq.M"
+                    )
+                else:
+                    pass_list.append(
+                        f"Rear Setback Structures (Garage/Servant Room/Store) : In Map = "
+                        f"{rear_structures_area} Sq.M, Allowed <= {max_rear_structures_area} Sq.M "
+                        f"(40% of rear setback area = {rear_setback_area} Sq.M)"
+                    )
 
         # Green/Landscape Area: required = 25% of total setback area, where
         # setback area is built from each side's drawn setback-line length

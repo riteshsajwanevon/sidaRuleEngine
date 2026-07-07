@@ -110,6 +110,14 @@ BALCONY_LIMIT_INDUSTRIAL_M:    float = 1.2   # Industries: relaxed till 1.2 m wi
 BALCONY_LIMIT_OTHERS_M:        float = 1.8   # All other building types: relaxed till 1.8 m width
 
 # ---------------------------------------------------------------------------
+# Setback-condition color codes (Section 5.e, SIDA byelaws)
+# ---------------------------------------------------------------------------
+GARAGE_COLOR:                int = 190  # Locked Garage
+SERVANT_QUARTERS_COLOR:      int = 181  # Servant room with toilet
+STORE_COLOR:                 int = 189  # Store
+STREET_PARKING_SCHOOL_COLOR: int = 183  # Street Parking for School (front-setback visitor parking)
+
+# ---------------------------------------------------------------------------
 # Building-height color codes (Section 3, Building Height, SIDA byelaws)
 # ---------------------------------------------------------------------------
 BUILDING_HEIGHT_DRAWN_COLOR:   int = 151   # "Height Of the Building after exemptions" (as drawn)
@@ -881,12 +889,21 @@ def derive_metrics(
     mechanical_parking_area = _fmt(_sum_area(model, 213))
     stilt_parking_area      = _fmt(_sum_area(model, 15))
     basement_parking_area   = _fmt(_sum_area(model, 31))
+    street_parking_for_school_area = _fmt(_sum_area(model, STREET_PARKING_SCHOOL_COLOR))
 
     # --- Ancillary ---
-    
+
     landscape_area             = _fmt(_sum_area(model, 60))
     canopy_area            = _fmt(_sum_area(model, 184))
-    
+
+    # Rear-setback structures (byelaw Section 5.e.i.4 — Residential plots):
+    # Locked Garage / Servant Room / Store, each capped individually and
+    # cumulatively at 40% of the rear setback area (checked in
+    # validation_service.py, where the rule-required rear setback is known).
+    garage_area           = _fmt(_sum_area(model, GARAGE_COLOR))
+    servant_quarters_area = _fmt(_sum_area(model, SERVANT_QUARTERS_COLOR))
+    store_area            = _fmt(_sum_area(model, STORE_COLOR))
+
     loading_unloading_area = _fmt(_sum_area(model, 221))
     rain_water_harvesting  = _fmt(_sum_area(model, RWH_AREA_COLOR))
     rwh_height              = _fmt(_length(model, RWH_HEIGHT_COLOR))
@@ -1003,6 +1020,7 @@ def derive_metrics(
         "mechanical_parking_area": mechanical_parking_area,
         "stilt_parking_area":      stilt_parking_area,
         "basement_parking_area":   basement_parking_area,
+        "street_parking_for_school_area": street_parking_for_school_area,
         # Parking — Equivalent Car Space (ECS)
         "provided_ecs":                ecs_result["provided_ecs"],
         "total_provided_parking_area": ecs_result["total_provided_parking_area"],
@@ -1015,6 +1033,10 @@ def derive_metrics(
         "canopy_area":             canopy_area,
         "stairs_area":             stairs_area,
         "fire_stairs":             fire_stairs,
+        # Rear-setback structures (Section 5.e.i.4)
+        "garage_area":             garage_area,
+        "servant_quarters_area":   servant_quarters_area,
+        "store_area":              store_area,
         "loading_unloading_area":          loading_unloading_area,
         "required_loading_unloading_area": required_loading_unloading_area,
         "rain_water_harvesting":   rain_water_harvesting,
